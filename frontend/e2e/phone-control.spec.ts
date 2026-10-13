@@ -280,9 +280,9 @@ test('renders H.264 and releases a pointer dragged outside the canvas', async ({
   await page.evaluate(async () => {
     const reactUrl = '/node_modules/.vite/deps/react.js';
     const domUrl = '/node_modules/.vite/deps/react-dom_client.js';
-    const componentUrl = '/src/components/ScrcpyPlayer.tsx';
+    const componentUrl = '/src/components/DeviceMonitor.tsx';
     const i18nUrl = '/src/lib/i18n-context.tsx';
-    const [reactModule, domModule, { ScrcpyPlayer }, { I18nProvider }] =
+    const [reactModule, domModule, { DeviceMonitor }, { I18nProvider }] =
       await Promise.all([
         import(reactUrl),
         import(domUrl),
@@ -302,9 +302,9 @@ test('renders H.264 and releases a pointer dragged outside the canvas', async ({
       React.createElement(
         I18nProvider,
         null,
-        React.createElement(ScrcpyPlayer, {
+        React.createElement(DeviceMonitor, {
           deviceId: 'synthetic',
-          enableControl: true,
+          className: 'h-full',
         })
       )
     );
@@ -314,6 +314,12 @@ test('renders H.264 and releases a pointer dragged outside the canvas', async ({
   await expect(page.locator('#control-test')).toContainText('FPS');
   const bounds = await canvas.boundingBox();
   if (!bounds) throw new Error('No rendered canvas');
+  // Collapsed hover controls must not intercept the upper phone screen.
+  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + 40);
+  await expect
+    .poll(() => actions.filter(action => action.action === 'up').length)
+    .toBe(1);
+  expect(actions[0].action).toBe('down');
   await page.mouse.move(
     bounds.x + bounds.width / 2,
     bounds.y + bounds.height / 2
@@ -327,9 +333,9 @@ test('renders H.264 and releases a pointer dragged outside the canvas', async ({
   await page.mouse.up();
   await expect
     .poll(() => actions.filter(action => action.action === 'up').length)
-    .toBe(1);
+    .toBe(2);
   expect(actions[0].action).toBe('down');
-  const up = actions.find(action => action.action === 'up');
+  const up = actions.filter(action => action.action === 'up').at(-1);
   expect(up).toMatchObject({ x: 63, y: 127, width: 64, height: 128 });
   // Window blur cancels an active gesture even without a pointer-up event.
   await page.mouse.move(bounds.x + 10, bounds.y + 10);

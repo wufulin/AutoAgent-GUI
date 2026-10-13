@@ -215,12 +215,12 @@ export function DeviceMonitor({
           showControlArea ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
-        <div className="flex items-start gap-2">
+        <div className="flex items-start gap-2 pointer-events-none">
           {/* Combined controls container - both controls slide together */}
           <div
             className={`flex flex-col items-end gap-2 transition-all duration-300 ${
-              showControls
-                ? 'opacity-100 translate-x-0'
+              showControlArea && showControls
+                ? 'opacity-100 translate-x-0 pointer-events-auto'
                 : 'opacity-0 translate-x-4 pointer-events-none'
             }`}
           >
@@ -300,7 +300,7 @@ export function DeviceMonitor({
             variant="ghost"
             size="icon"
             onClick={toggleControls}
-            className="h-8 w-8 rounded-full bg-popover/90 backdrop-blur border border-border shadow-lg hover:bg-accent"
+            className={`h-8 w-8 rounded-full bg-popover/90 backdrop-blur border border-border shadow-lg hover:bg-accent ${showControlArea ? 'pointer-events-auto' : ''}`}
             title={showControls ? 'Hide controls' : 'Show controls'}
           >
             {showControls ? (
