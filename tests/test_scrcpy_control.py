@@ -82,6 +82,73 @@ async def test_disconnect_and_idle_expiry_release_once(manager):
     await session.close()
     assert [c.args[0][1] for c in transport.send_control.call_args_list] == [0, 3]
     assert not manager._manual_owners
+    transport.cancel_pending_touch.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_held_disconnect_keeps_ownership_until_native_cancel_finishes(manager):
+    transport = AsyncMock()
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def cancel():
+        started.set()
+        await finish.wait()
+
+    transport.cancel_pending_touch.side_effect = cancel
+    session = ControlSession("phone", transport)
+    await session.execute(cmd(session, 1, "down"))
+    closing = asyncio.create_task(session.close())
+    await started.wait()
+    with pytest.raises(Exception, match="manual control"):
+        await manager.acquire_device_async("phone")
+    assert not closing.done()
+    finish.set()
+    await closing
+    assert not manager._manual_owners
+    assert [c.args[0][1] for c in transport.send_control.call_args_list] == [0, 3]
+
+
+@pytest.mark.anyio
+async def test_native_cancel_failure_keeps_replacement_session_blocked(manager):
+    transport = AsyncMock()
+    transport.cancel_pending_touch.side_effect = ConnectionError("offline")
+    session = ControlSession("phone", transport)
+    await session.execute(cmd(session, 1, "down"))
+    with pytest.raises(ConnectionError):
+        await session.close()
+    assert await manager.manual_recovery_required("phone")
+    replacement = ControlSession("phone", AsyncMock())
+    with pytest.raises(Exception, match="unknown"):
+        await replacement.execute(cmd(replacement, 1, "down"))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("output", ["", "Error: unsupported CANCEL"])
+async def test_native_cancel_is_device_bound_and_rejects_shell_error(
+    monkeypatch, output
+):
+    import subprocess
+    from AutoGLM_GUI import scrcpy_stream
+
+    execute = AsyncMock(return_value=subprocess.CompletedProcess([], 0, output, ""))
+    monkeypatch.setattr(scrcpy_stream, "run_cmd_silently", execute)
+    streamer = scrcpy_stream.ScrcpyStreamer("phone", control_enabled=True)
+    if output:
+        with pytest.raises(RuntimeError, match="not confirmed"):
+            await streamer.cancel_pending_touch()
+    else:
+        await streamer.cancel_pending_touch()
+    assert execute.call_args.args[0][-8:] == [
+        "-s",
+        "phone",
+        "shell",
+        "input",
+        "motionevent",
+        "CANCEL",
+        "0",
+        "0",
+    ]
+    assert execute.call_args.kwargs["timeout"] == 5
 
 
 @pytest.mark.anyio

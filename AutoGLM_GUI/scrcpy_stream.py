@@ -19,7 +19,12 @@ from AutoGLM_GUI.adb_plus.display import (
     select_primary_display_async,
 )
 from AutoGLM_GUI.logger import logger
-from AutoGLM_GUI.platform_utils import is_windows, run_cmd_silently, spawn_process
+from AutoGLM_GUI.platform_utils import (
+    build_adb_command,
+    is_windows,
+    run_cmd_silently,
+    spawn_process,
+)
 from AutoGLM_GUI.scrcpy_protocol import (
     PTS_CONFIG,
     PTS_KEYFRAME,
@@ -600,6 +605,19 @@ class ScrcpyStreamer:
             raise ConnectionError("Control socket is closed")
         self.control_writer.write(data)
         await self.control_writer.drain()
+
+    async def cancel_pending_touch(self) -> None:
+        """Finish native cancellation before terminating an active controller."""
+        result = await run_cmd_silently(
+            build_adb_command(self.device_id)
+            + ["shell", "input", "motionevent", "CANCEL", "0", "0"],
+            timeout=5,
+        )
+        result.check_returncode()
+        # Some Android input shells print an error but return exit code zero.
+        # Unsupported CANCEL must leave the device quarantined, never look safe.
+        if result.stdout.strip() or result.stderr.strip():
+            raise RuntimeError("Native touch cancellation was not confirmed")
 
     def stop(self) -> None:
         """Stop scrcpy server and cleanup resources."""

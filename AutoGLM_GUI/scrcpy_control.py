@@ -66,6 +66,8 @@ def encode_scroll(x: int, y: int, width: int, height: int, amount: float) -> byt
 class ControlTransport(Protocol):
     async def send_control(self, data: bytes) -> None: ...
 
+    async def cancel_pending_touch(self) -> None: ...
+
 
 class ControlSession:
     def __init__(self, device_id: str, transport: ControlTransport):
@@ -161,7 +163,9 @@ class ControlSession:
                 "server_ms": round((time.monotonic() - started) * 1000, 2),
             }
 
-    async def _release(self, geometry: ControlCommand | None = None) -> None:
+    async def _release(
+        self, geometry: ControlCommand | None = None, *, release_owner: bool = True
+    ) -> None:
         if self.active:
             if geometry is None and self.active.epoch != self.epoch:
                 self.failed = True
@@ -176,7 +180,8 @@ class ControlSession:
             y = min(height - 1, round(last.y * height / last.height))
             await self._write(encode_touch("cancel", x, y, width, height))
             self.active = None
-        await self.manager.release_manual_control(self.device_id, self.id)
+        if release_owner:
+            await self.manager.release_manual_control(self.device_id, self.id)
 
     async def expire(self) -> bool:
         async with self.lock:
@@ -189,4 +194,20 @@ class ControlSession:
         async with self.lock:
             self.closed = True
             if not self.failed:
-                await self._release()
+                held = self.active is not None
+                try:
+                    await self._release(release_owner=False)
+                    if held:
+                        # A socket drain does not confirm Android injection. Keep
+                        # ownership and the server alive until native cancellation
+                        # completes, before the caller tears down the sockets.
+                        await asyncio.wait_for(
+                            self.transport.cancel_pending_touch(), timeout=5.5
+                        )
+                    await self.manager.release_manual_control(self.device_id, self.id)
+                except BaseException:
+                    self.failed = True
+                    await self.manager.quarantine_manual_control(
+                        self.device_id, self.id
+                    )
+                    raise
