@@ -25,7 +25,10 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const OUT_DIR = path.resolve(__dirname, '../../docs/static/img/screenshots');
+// CI/local verification can preserve generated artifacts outside tracked docs.
+const OUT_DIR = process.env.AUTOGLM_E2E_SCREENSHOTS_DIR
+  ? path.resolve(process.env.AUTOGLM_E2E_SCREENSHOTS_DIR)
+  : path.resolve(__dirname, '../../docs/static/img/screenshots');
 
 type ServiceUrls = {
   llm_url: string;
