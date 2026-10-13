@@ -1,10 +1,9 @@
 """Device control routes (tap/swipe/touch)."""
 
-import asyncio
-
 from fastapi import APIRouter
 
 from AutoGLM_GUI.devices.adb_device import ADBDevice
+from AutoGLM_GUI.legacy_control import legacy_touch, manual_operation
 from AutoGLM_GUI.schemas import (
     SwipeRequest,
     SwipeResponse,
@@ -29,11 +28,8 @@ async def control_tap(request: TapRequest) -> TapResponse:
             return TapResponse(success=False, error="device_id is required")
 
         device = ADBDevice(request.device_id)
-        await asyncio.to_thread(
-            device.tap,
-            x=request.x,
-            y=request.y,
-            delay=request.delay,
+        await manual_operation(
+            request.device_id, device.tap, x=request.x, y=request.y, delay=request.delay
         )
 
         return TapResponse(success=True)
@@ -49,7 +45,8 @@ async def control_swipe(request: SwipeRequest) -> SwipeResponse:
             return SwipeResponse(success=False, error="device_id is required")
 
         device = ADBDevice(request.device_id)
-        await asyncio.to_thread(
+        await manual_operation(
+            request.device_id,
             device.swipe,
             start_x=request.start_x,
             start_y=request.start_y,
@@ -70,7 +67,9 @@ async def control_touch_down(request: TouchDownRequest) -> TouchDownResponse:
     try:
         from AutoGLM_GUI.adb_plus import touch_down_async
 
-        await touch_down_async(
+        await legacy_touch(
+            action="down",
+            execute=touch_down_async,
             x=request.x,
             y=request.y,
             device_id=request.device_id,
@@ -88,7 +87,9 @@ async def control_touch_move(request: TouchMoveRequest) -> TouchMoveResponse:
     try:
         from AutoGLM_GUI.adb_plus import touch_move_async
 
-        await touch_move_async(
+        await legacy_touch(
+            action="move",
+            execute=touch_move_async,
             x=request.x,
             y=request.y,
             device_id=request.device_id,
@@ -106,7 +107,9 @@ async def control_touch_up(request: TouchUpRequest) -> TouchUpResponse:
     try:
         from AutoGLM_GUI.adb_plus import touch_up_async
 
-        await touch_up_async(
+        await legacy_touch(
+            action="up",
+            execute=touch_up_async,
             x=request.x,
             y=request.y,
             device_id=request.device_id,

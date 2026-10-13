@@ -995,7 +995,7 @@ def test_mdns_pair_touch_version_and_keyboard(monkeypatch: pytest.MonkeyPatch) -
 
     async def fake_touch_run(cmd, timeout=5):
         async_calls.append(cmd)
-        return _completed()
+        return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(touch, "run_cmd_silently", fake_touch_run)
     monkeypatch.setattr(asyncio, "sleep", _noop_sleep)

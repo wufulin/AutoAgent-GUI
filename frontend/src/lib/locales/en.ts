@@ -195,7 +195,7 @@ export const en = {
     auto: 'Auto',
     video: 'Video',
     image: 'Image',
-    imageRefresh: 'Image (0.5s refresh)',
+    imageRefresh: 'Image refresh',
     tapped: 'Tapped',
     tapError: 'Error: {error}',
     swiped: 'Swiped',
@@ -207,6 +207,27 @@ export const en = {
     },
   },
   deviceMonitor: {
+    controlTimeout: 'Video connection timed out',
+    controlBackendOld: 'Update the backend to enable continuous control',
+    controlRecoveryFailed: 'Could not recover control',
+    controlUnknown:
+      'The previous touch result is unknown. Check the phone before recovery.',
+    controlDisconnected: 'Video connection interrupted',
+    controlReconnectFailed: 'Could not reconnect',
+    controlMetricHelp:
+      'P95 measures the round trip to the backend control socket write; it does not confirm a completed phone action.',
+    controlMetric: 'Control P95',
+    controlStalled: 'No recent frame',
+    controlConnecting: 'Connecting…',
+    controlConfirm:
+      'Check the phone and confirm that no touch or operation remains active before recovering control.',
+    controlRecover: 'Confirm phone state and recover',
+    controlReconnect: 'Reconnect',
+    qualityLabel: 'Video quality',
+    qualityBalanced: 'Standard',
+    qualitySmooth: 'Smooth',
+    qualityDataSaver: 'Low bandwidth',
+
     compact: 'Compact',
     standard: 'Standard',
     wide: 'Wide',

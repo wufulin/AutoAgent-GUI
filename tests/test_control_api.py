@@ -14,6 +14,12 @@ pytestmark = [pytest.mark.contract, pytest.mark.release_gate]
 
 @pytest.fixture
 def control_env(monkeypatch: pytest.MonkeyPatch) -> dict:
+    from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
+    import AutoGLM_GUI.legacy_control as legacy
+
+    monkeypatch.setattr(PhoneAgentManager, "_instance", PhoneAgentManager())
+    legacy._gestures.clear()
+    legacy._locks.clear()
     device_calls: list[dict] = []
     touch_calls: dict[str, list[dict]] = {"down": [], "move": [], "up": []}
     should_fail = {

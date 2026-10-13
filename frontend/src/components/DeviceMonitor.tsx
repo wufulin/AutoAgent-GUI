@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
-import { ScrcpyPlayer } from './ScrcpyPlayer';
+import { ScrcpyPlayer, type VideoQuality } from './ScrcpyPlayer';
 import { WidthControl } from './WidthControl';
 import { ResizableHandle } from './ResizableHandle';
 import { useLocalStorage } from '../hooks/useLocalStorage';
@@ -63,6 +63,11 @@ export function DeviceMonitor({
     'device-monitor-width',
     320
   );
+  const [quality, setQuality] = useLocalStorage<VideoQuality>(
+    'device-video-quality',
+    'balanced'
+  );
+  const [videoReady, setVideoReady] = useState(false);
   const [fallbackReason, setFallbackReason] = useState<string | null>(null);
   const [showWebCodecsWarning, setShowWebCodecsWarning] = useState(false);
 
@@ -124,6 +129,7 @@ export function DeviceMonitor({
   const handleVideoStreamReady = useCallback(
     (stream: { close: () => void } | null) => {
       videoStreamRef.current = stream;
+      setVideoReady(!!stream);
     },
     []
   );
@@ -144,6 +150,10 @@ export function DeviceMonitor({
 
   const toggleDisplayMode = (mode: 'auto' | 'video' | 'screenshot') => {
     setDisplayMode(mode);
+    if (mode !== 'screenshot') {
+      setUseVideoStream(true);
+      setVideoStreamFailed(false);
+    }
   };
 
   useEffect(() => {
@@ -260,6 +270,24 @@ export function DeviceMonitor({
               </Button>
             </div>
 
+            {!isRemoteDevice && (
+              <select
+                aria-label={t.deviceMonitor.qualityLabel}
+                className="rounded border bg-background p-1 text-xs"
+                value={quality}
+                onChange={event =>
+                  setQuality(event.target.value as VideoQuality)
+                }
+              >
+                <option value="balanced">
+                  {t.deviceMonitor.qualityBalanced}
+                </option>
+                <option value="smooth">{t.deviceMonitor.qualitySmooth}</option>
+                <option value="data-saver">
+                  {t.deviceMonitor.qualityDataSaver}
+                </option>
+              </select>
+            )}
             {/* Width controls - aligned with display mode controls */}
             <WidthControl
               currentWidth={panelWidth}
@@ -290,7 +318,8 @@ export function DeviceMonitor({
           variant="secondary"
           className="bg-white/90 text-slate-700 border border-slate-200 dark:bg-slate-900/90 dark:text-slate-300 dark:border-slate-700"
         >
-          {displayMode === 'auto' && (t.devicePanel?.auto || 'Auto')}
+          {displayMode === 'auto' &&
+            `${t.devicePanel?.auto || 'Auto'} · ${videoStreamFailed ? t.devicePanel?.image || 'Image' : videoReady ? t.devicePanel?.video || 'Video' : '…'}`}
           {displayMode === 'video' && (
             <>
               <MonitorPlay className="w-3 h-3 mr-1" />
@@ -368,6 +397,7 @@ export function DeviceMonitor({
           )}
           <ScrcpyPlayer
             deviceId={deviceId}
+            quality={quality}
             className="w-full h-full"
             enableControl={true}
             onFallback={handleFallback}
