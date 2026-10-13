@@ -11,7 +11,7 @@ from AutoGLM_GUI.adb_plus import capture_screenshot_async
 from AutoGLM_GUI.exceptions import DeviceNotAvailableError
 from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.schemas import ScreenshotRequest, ScreenshotResponse
-from AutoGLM_GUI.socketio_server import stop_streamers
+from AutoGLM_GUI.socketio_server import stop_streamers_async
 
 router = APIRouter()
 
@@ -19,7 +19,7 @@ router = APIRouter()
 @router.post("/api/video/reset")
 async def reset_video_stream(device_id: str | None = None) -> dict[str, Any]:
     """Reset active scrcpy streams (Socket.IO)."""
-    stop_streamers(device_id=device_id)
+    await stop_streamers_async(device_id=device_id)
     if device_id:
         logger.info("Video stream reset for device %s", device_id)
         return {

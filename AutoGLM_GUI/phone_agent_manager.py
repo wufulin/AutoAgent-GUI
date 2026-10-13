@@ -145,6 +145,8 @@ class PhoneAgentManager:
         # Agent storage (transition from global state to instance state)
         self._agents: dict[str, AsyncAgent] = {}
         self._agent_configs: dict[str, tuple[ModelConfig, AgentConfig]] = {}
+        self._manual_owners: dict[str, str] = {}
+        self._manual_uncertain: set[str] = set()
 
     @classmethod
     def get_instance(cls) -> PhoneAgentManager:
@@ -609,6 +611,53 @@ class PhoneAgentManager:
 
     # ==================== Concurrency Control ====================
 
+    async def acquire_manual_control(self, device_id: str, owner: str) -> None:
+        """Share the atomic device boundary with all Agent contexts."""
+        async with self._manager_lock:
+            if device_id in self._manual_uncertain:
+                raise DeviceBusyError(
+                    "Touch result unknown; confirm the phone is idle before recovery"
+                )
+            if (
+                device_id in self._manual_owners
+                and self._manual_owners[device_id] != owner
+            ):
+                raise DeviceBusyError("Another controller owns this device")
+            if any(
+                m.device_id == device_id and m.state == AgentState.BUSY
+                for m in self._metadata.values()
+            ):
+                raise DeviceBusyError(
+                    "AI is operating this device; stop the task before manual control"
+                )
+            self._manual_owners[device_id] = owner
+
+    async def release_manual_control(self, device_id: str, owner: str) -> None:
+        async with self._manager_lock:
+            if (
+                device_id not in self._manual_uncertain
+                and self._manual_owners.get(device_id) == owner
+            ):
+                self._manual_owners.pop(device_id, None)
+
+    async def quarantine_manual_control(self, device_id: str, owner: str) -> None:
+        async with self._manager_lock:
+            self._manual_owners[device_id] = owner
+            self._manual_uncertain.add(device_id)
+
+    async def manual_recovery_required(self, device_id: str) -> bool:
+        required = True
+        async with self._manager_lock:
+            required = device_id in self._manual_uncertain
+        return required
+
+    async def recover_manual_control(self, device_id: str) -> None:
+        """Only called after an explicit human confirmation, never by reconnect."""
+        async with self._manager_lock:
+            if device_id in self._manual_uncertain:
+                self._manual_uncertain.remove(device_id)
+                self._manual_owners.pop(device_id, None)
+
     def _make_agent_key(self, device_id: str, context: str = "default") -> str:
         """Build composite key for device+context isolation."""
         return device_id if context == "default" else f"{device_id}:{context}"
@@ -657,6 +706,12 @@ class PhoneAgentManager:
         # window where another task can destroy the agent, leaving us returning
         # ``True`` without ever setting the state to BUSY.
         async with self._manager_lock:
+            if device_id in self._manual_owners:
+                if raise_on_timeout:
+                    raise DeviceBusyError(
+                        "Device is under manual control or awaiting touch recovery"
+                    )
+                return False
             if agent_key not in self._agents:
                 if auto_initialize:
                     await self._auto_initialize_agent_unsafe(agent_key, device_id)

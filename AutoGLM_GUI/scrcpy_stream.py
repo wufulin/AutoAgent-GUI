@@ -3,6 +3,7 @@
 import asyncio
 import os
 import socket
+import secrets
 import subprocess
 import sys
 import time
@@ -127,6 +128,8 @@ class ScrcpyStreamer:
         port: int = 27183,
         idr_interval_s: int = 1,
         stream_options: ScrcpyVideoStreamOptions | None = None,
+        control_enabled: bool = False,
+        max_fps: int = 20,
     ):
         """Initialize ScrcpyStreamer.
 
@@ -141,7 +144,13 @@ class ScrcpyStreamer:
         self.device_id = device_id
         self.max_size = max_size
         self.bit_rate = bit_rate
-        self.port = port
+        self.port = 0 if control_enabled else port
+        self.control_enabled = control_enabled
+        self.max_fps = max_fps
+        self.scid = secrets.token_hex(4) if control_enabled else None
+        if self.scid:
+            self.scid = f"{int(self.scid, 16) & 0x7FFFFFFF:08x}"
+        self.control_writer: asyncio.StreamWriter | None = None
         self.idr_interval_s = idr_interval_s
         self.stream_options = stream_options or ScrcpyVideoStreamOptions()
 
@@ -219,7 +228,8 @@ class ScrcpyStreamer:
 
             # 1. Kill existing scrcpy server processes on device
             logger.info("Cleaning up existing scrcpy processes...")
-            await self._cleanup_existing_server()
+            if not self.control_enabled:
+                await self._cleanup_existing_server()
 
             # 2. Push scrcpy-server to device
             logger.info("Pushing server to device...")
@@ -236,6 +246,10 @@ class ScrcpyStreamer:
             # 5. Connect TCP socket
             logger.info("Connecting to TCP socket...")
             await self._connect_socket()
+            if self.control_enabled:
+                _, self.control_writer = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", self.port), timeout=5
+                )
             logger.info("Successfully connected!")
 
         except Exception as e:
@@ -297,9 +311,13 @@ class ScrcpyStreamer:
         cmd = ["adb"]
         if self.device_id:
             cmd.extend(["-s", self.device_id])
-        cmd.extend(["forward", f"tcp:{self.port}", "localabstract:scrcpy"])
+        socket_name = f"scrcpy_{self.scid}" if self.scid else "scrcpy"
+        cmd.extend(["forward", f"tcp:{self.port}", f"localabstract:{socket_name}"])
 
-        await run_cmd_silently(cmd)
+        result = await run_cmd_silently(cmd)
+        if self.control_enabled:
+            result.check_returncode()
+            self.port = int(result.stdout.strip())
         self.forward_cleanup_needed = True
 
     def _build_server_options(self) -> ScrcpyServerOptions:
@@ -307,10 +325,10 @@ class ScrcpyStreamer:
         return ScrcpyServerOptions(
             max_size=self.max_size,
             bit_rate=self.bit_rate,
-            max_fps=20,
+            max_fps=self.max_fps,
             tunnel_forward=True,
             audio=False,
-            control=False,
+            control=self.control_enabled,
             cleanup=False,
             video_codec=self.stream_options.video_codec,
             send_frame_meta=self.stream_options.send_frame_meta,
@@ -371,6 +389,8 @@ class ScrcpyStreamer:
                 f"send_dummy_byte={str(options.send_dummy_byte).lower()}",
                 f"video_codec_options={options.video_codec_options}",
             ]
+            if self.scid:
+                server_args.extend([f"scid={self.scid}", "clipboard_autosync=false"])
             if options.display_id:
                 server_args.append(f"display_id={options.display_id}")
             cmd.extend(server_args)
@@ -395,7 +415,7 @@ class ScrcpyStreamer:
 
             if error_msg is not None:
                 # Detailed error classification
-                if "Address already in use" in error_msg:
+                if "Address already in use" in error_msg and not self.control_enabled:
                     logger.error(
                         f"Port {self.port} conflict detected (attempt {attempt + 1}/{max_retries}). "
                         f"Error: {error_msg[:200]}"
@@ -439,7 +459,7 @@ class ScrcpyStreamer:
                 logger.debug(f"Failed to set socket buffer size: {e}")
 
             try:
-                sock.connect(("localhost", self.port))
+                await asyncio.to_thread(sock.connect, ("127.0.0.1", self.port))
                 sock.settimeout(None)
                 self.tcp_socket = sock  # Only assign on success
                 logger.debug(f"Connected to scrcpy server on attempt {attempt + 1}")
@@ -575,9 +595,23 @@ class ScrcpyStreamer:
         while True:
             yield await self.read_media_packet()
 
+    async def send_control(self, data: bytes) -> None:
+        if not self.control_writer or self.control_writer.is_closing():
+            raise ConnectionError("Control socket is closed")
+        self.control_writer.write(data)
+        await self.control_writer.drain()
+
     def stop(self) -> None:
         """Stop scrcpy server and cleanup resources."""
+        writer = getattr(self, "control_writer", None)
+        if writer:
+            writer.close()
+            self.control_writer = None
         if self.tcp_socket:
+            try:
+                self.tcp_socket.shutdown(socket.SHUT_RDWR)
+            except (OSError, AttributeError):
+                pass
             try:
                 self.tcp_socket.close()
             except OSError as exc:

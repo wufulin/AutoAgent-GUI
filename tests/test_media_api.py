@@ -83,7 +83,7 @@ def media_env(monkeypatch: pytest.MonkeyPatch) -> dict:
         def get_instance() -> FakeDeviceManager:
             return fake_manager
 
-    def fake_stop_streamers(device_id: str | None = None) -> None:
+    async def fake_stop_streamers(device_id: str | None = None) -> None:
         reset_calls.append(device_id)
 
     async def fake_capture_screenshot(device_id: str | None = None) -> FakeScreenshot:
@@ -96,7 +96,7 @@ def media_env(monkeypatch: pytest.MonkeyPatch) -> dict:
         )
 
     monkeypatch.setattr(device_manager_module, "DeviceManager", FakeDeviceManagerClass)
-    monkeypatch.setattr(media_api, "stop_streamers", fake_stop_streamers)
+    monkeypatch.setattr(media_api, "stop_streamers_async", fake_stop_streamers)
     monkeypatch.setattr(media_api, "capture_screenshot_async", fake_capture_screenshot)
 
     app = FastAPI()

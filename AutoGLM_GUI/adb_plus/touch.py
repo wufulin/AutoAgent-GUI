@@ -100,10 +100,11 @@ async def touch_down_async(
 ) -> None:
     """Async variant of ``touch_down`` for request handlers."""
     adb_prefix = build_adb_command(device_id, adb_path)
-    await run_cmd_silently(
+    result = await run_cmd_silently(
         adb_prefix + ["shell", "input", "motionevent", "DOWN", str(x), str(y)],
         timeout=5,
     )
+    result.check_returncode()
     if delay > 0:
         await asyncio.sleep(delay)
 
@@ -117,10 +118,11 @@ async def touch_move_async(
 ) -> None:
     """Async variant of ``touch_move`` for request handlers."""
     adb_prefix = build_adb_command(device_id, adb_path)
-    await run_cmd_silently(
+    result = await run_cmd_silently(
         adb_prefix + ["shell", "input", "motionevent", "MOVE", str(x), str(y)],
         timeout=5,
     )
+    result.check_returncode()
     if delay > 0:
         await asyncio.sleep(delay)
 
@@ -134,9 +136,10 @@ async def touch_up_async(
 ) -> None:
     """Async variant of ``touch_up`` for request handlers."""
     adb_prefix = build_adb_command(device_id, adb_path)
-    await run_cmd_silently(
+    result = await run_cmd_silently(
         adb_prefix + ["shell", "input", "motionevent", "UP", str(x), str(y)],
         timeout=5,
     )
+    result.check_returncode()
     if delay > 0:
         await asyncio.sleep(delay)
