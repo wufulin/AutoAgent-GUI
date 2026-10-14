@@ -13,6 +13,8 @@ export const zh = {
     retry: '重试',
   },
   footer: {
+    preferences: '界面设置',
+    theme: '主题',
     starOnGitHub: '在 GitHub 上Star',
     newVersion: '新版本!',
     updateAvailable: '可用更新: v{version}',
