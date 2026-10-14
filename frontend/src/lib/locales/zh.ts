@@ -21,6 +21,17 @@ export const zh = {
     versionMismatchDetail: '前端: v{frontend}，后端: v{backend}',
   },
   chat: {
+    advancedSettings: '高级设置',
+    executionMode: '聊天执行方式',
+    plannedExecution: '自动规划（默认）',
+    directExecution: '直接执行',
+    executionModeHint:
+      '自动规划会拆解任务并根据反馈调整步骤。直接执行适合简单任务或调试，只需配置视觉模型。此选择仅作用于当前聊天链接，不修改定时任务和 API 默认值；保存后生效，取消会放弃更改。',
+    plannerSetupTitle: '配置决策模型以开始使用',
+    plannerSetupHint:
+      '助手需要决策模型规划任务，以及视觉模型操作手机。请先配置决策模型，也可在高级设置中选择直接执行。',
+    configurePlanner: '配置决策模型',
+
     welcomeTitle: '欢迎使用 AutoGLM',
     connectDevice: '连接 ADB 设备开始使用',
     configuration: '配置',
@@ -414,7 +425,7 @@ export const zh = {
   },
   chatkit: {
     title: 'AI 助手',
-    layeredAgent: '分层代理模式',
+    layeredAgent: '自动规划',
     layeredAgentDesc:
       '规划层将任务分解为子任务，执行层独立完成每个子任务。你可以看到工具调用的详细过程。',
     modeLabel: '模式:',

@@ -79,6 +79,9 @@ test.describe('Device state routing', () => {
           model_name: 'mock-glm-model',
           api_key: 'mock-key',
           agent_type: 'glm-async',
+          decision_base_url: `${llm_url}/v1`,
+          decision_model_name: 'mock-planner',
+          decision_api_key: 'mock-key',
         },
       }),
       'save config'

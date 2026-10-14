@@ -25,11 +25,6 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
   Settings,
@@ -201,11 +196,12 @@ export function ChatComponent() {
     selectDeviceBySerial,
     selectedSerial,
   } = useDevices();
-  // Chat mode: 'classic' for DevicePanel (single model), 'chatkit' for ChatKitPanel (layered agent)
-  // Initialize from URL search params if available
-  const [chatMode, setChatMode] = useState<'classic' | 'chatkit'>(
-    searchParams.mode || 'classic'
+  // Preserve legacy URLs; ordinary visits use the layered task entry.
+  const chatMode = searchParams.mode ?? 'chatkit';
+  const [tempChatMode, setTempChatMode] = useState<'classic' | 'chatkit'>(
+    chatMode
   );
+  const [configTab, setConfigTab] = useState('vision');
 
   const [toast, setToast] = useState<{
     message: string;
@@ -393,6 +389,14 @@ export function ChatComponent() {
 
       // Update the committed snapshot after save
       lastCommittedTempConfigRef.current = structuredClone(tempConfig);
+      await navigate({
+        to: '/chat',
+        search: {
+          serial: currentDevice?.serial || selectedSerial || undefined,
+          mode: tempChatMode,
+        },
+        replace: true,
+      });
       setShowConfig(false);
     } catch (err) {
       console.error('Failed to save config:', err);
@@ -487,6 +491,7 @@ export function ChatComponent() {
             // Dialog closing without save: restore tempConfig
             // to the last committed state so unsaved edits are discarded.
             setTempConfig(structuredClone(lastCommittedTempConfigRef.current));
+            setTempChatMode(chatMode);
           }
           setShowConfig(open);
         }}
@@ -500,8 +505,12 @@ export function ChatComponent() {
             <DialogDescription>{t.chat.configureApi}</DialogDescription>
           </DialogHeader>
 
-          <Tabs defaultValue="vision" className="flex-1 flex flex-col min-h-0">
-            <TabsList className="grid w-full grid-cols-2 flex-shrink-0">
+          <Tabs
+            value={configTab}
+            onValueChange={setConfigTab}
+            className="flex-1 flex flex-col min-h-0"
+          >
+            <TabsList className="grid w-full grid-cols-3 flex-shrink-0">
               <TabsTrigger value="vision">
                 <Eye className="w-4 h-4 mr-2" />
                 {t.chat.visionModelTab}
@@ -509,6 +518,9 @@ export function ChatComponent() {
               <TabsTrigger value="decision">
                 <Brain className="w-4 h-4 mr-2" />
                 {t.chat.decisionModelTab}
+              </TabsTrigger>
+              <TabsTrigger value="advanced">
+                {t.chat.advancedSettings}
               </TabsTrigger>
             </TabsList>
 
@@ -1098,6 +1110,32 @@ export function ChatComponent() {
                 )}
               </div>
             </TabsContent>
+            <TabsContent
+              value="advanced"
+              className="space-y-4 mt-4 overflow-y-auto flex-1 min-h-0"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="chat_execution_mode">
+                  {t.chat.executionMode}
+                </Label>
+                <select
+                  id="chat_execution_mode"
+                  value={tempChatMode}
+                  onChange={event =>
+                    setTempChatMode(
+                      event.target.value === 'classic' ? 'classic' : 'chatkit'
+                    )
+                  }
+                  className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm dark:border-slate-800 dark:bg-slate-950"
+                >
+                  <option value="chatkit">{t.chat.plannedExecution}</option>
+                  <option value="classic">{t.chat.directExecution}</option>
+                </select>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {t.chat.executionModeHint}
+                </p>
+              </div>
+            </TabsContent>
           </Tabs>
 
           <DialogFooter className="sm:justify-between gap-2 flex-shrink-0">
@@ -1105,6 +1143,7 @@ export function ChatComponent() {
               variant="outline"
               onClick={() => {
                 setShowConfig(false);
+                setTempChatMode(chatMode);
                 setVisionConnectionResult(null);
                 setDecisionConnectionResult(null);
                 if (config) {
@@ -1139,7 +1178,11 @@ export function ChatComponent() {
         devices={devices}
         currentDeviceId={currentDeviceId}
         onSelectDevice={selectDeviceById}
-        onOpenConfig={() => setShowConfig(true)}
+        onOpenConfig={() => {
+          setTempChatMode(chatMode);
+          setConfigTab('vision');
+          setShowConfig(true);
+        }}
         onOpenGroupManager={() => setShowGroupManager(true)}
         onConnectWifi={handleConnectWifi}
         onDisconnectWifi={handleDisconnectWifi}
@@ -1149,67 +1192,8 @@ export function ChatComponent() {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-h-0 relative">
-        {/* Mode Toggle - Floating Capsule */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
-          <div className="flex items-center gap-0.5 bg-white/95 dark:bg-slate-800/95 backdrop-blur-sm rounded-full p-1 shadow-lg border border-slate-200 dark:border-slate-700">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => setChatMode('classic')}
-                  className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all ${
-                    chatMode === 'classic'
-                      ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  <Sparkles className="w-4 h-4" />
-                  {t.chatkit?.classicMode || '经典模式'}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={8} className="max-w-xs">
-                <div className="space-y-1">
-                  <p className="font-medium">
-                    {t.chatkit?.classicMode || '经典模式'}
-                  </p>
-                  <p className="text-xs opacity-80">
-                    {t.chatkit?.classicModeDesc || '视觉模型直接执行任务'}
-                  </p>
-                </div>
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => {
-                    setChatMode('chatkit');
-                  }}
-                  className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all ${
-                    chatMode === 'chatkit'
-                      ? 'bg-indigo-600 text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  <Layers className="w-4 h-4" />
-                  {t.chatkit?.layeredMode || '分层代理'}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={8} className="max-w-xs">
-                <div className="space-y-1">
-                  <p className="font-medium">
-                    {t.chatkit?.layeredMode || '分层代理'}
-                  </p>
-                  <p className="text-xs opacity-80">
-                    {t.chatkit?.layeredModeDesc ||
-                      '规划层分解任务，执行层独立完成子任务'}
-                  </p>
-                </div>
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        </div>
-
         {/* Content area */}
-        <div className="flex-1 flex items-stretch justify-center min-h-0 px-4 py-4 pt-16">
+        <div className="flex-1 flex items-stretch justify-center min-h-0 px-4 py-4">
           {!currentDevice ? (
             <div className="flex-1 flex items-center justify-center bg-slate-50 dark:bg-slate-950">
               <div className="text-center">
@@ -1243,14 +1227,45 @@ export function ChatComponent() {
             >
               {chatMode === 'chatkit' ? (
                 <div className="w-full flex items-stretch justify-center">
-                  <ChatKitPanel
-                    deviceId={currentDevice.id}
-                    deviceSerial={currentDevice.serial}
-                    deviceName={currentDevice.model}
-                    deviceConnectionType={currentDevice.connection_type}
-                    isVisible={currentDevice.id === currentDeviceId}
-                    unlimitedStepsEnabled={config?.default_max_steps === null}
-                  />
+                  {config &&
+                  (!config.decision_base_url || !config.decision_model_name) ? (
+                    <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
+                      <h2 className="text-lg font-semibold">
+                        {t.chat.plannerSetupTitle}
+                      </h2>
+                      <p className="max-w-md text-sm text-slate-500 dark:text-slate-400">
+                        {t.chat.plannerSetupHint}
+                      </p>
+                      <Button
+                        onClick={() => {
+                          setTempChatMode(chatMode);
+                          setConfigTab('decision');
+                          setShowConfig(true);
+                        }}
+                      >
+                        {t.chat.configurePlanner}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setTempChatMode(chatMode);
+                          setConfigTab('advanced');
+                          setShowConfig(true);
+                        }}
+                      >
+                        {t.chat.advancedSettings}
+                      </Button>
+                    </div>
+                  ) : (
+                    <ChatKitPanel
+                      deviceId={currentDevice.id}
+                      deviceSerial={currentDevice.serial}
+                      deviceName={currentDevice.model}
+                      deviceConnectionType={currentDevice.connection_type}
+                      isVisible={currentDevice.id === currentDeviceId}
+                      unlimitedStepsEnabled={config?.default_max_steps === null}
+                    />
+                  )}
                 </div>
               ) : (
                 <div className="w-full flex items-stretch justify-center">

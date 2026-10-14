@@ -21,6 +21,17 @@ export const en = {
     versionMismatchDetail: 'Frontend: v{frontend}, Backend: v{backend}',
   },
   chat: {
+    advancedSettings: 'Advanced settings',
+    executionMode: 'Chat execution',
+    plannedExecution: 'Automatic planning (default)',
+    directExecution: 'Direct execution',
+    executionModeHint:
+      'Automatic planning breaks down tasks and adjusts steps from feedback. Direct execution is useful for simple tasks or debugging and only needs a vision model. This choice applies to the current chat URL; scheduled tasks and API defaults are unchanged. Save to apply, or cancel to discard.',
+    plannerSetupTitle: 'Configure a decision model to get started',
+    plannerSetupHint:
+      'The assistant needs a decision model to plan tasks and a vision model to operate the phone. Configure the decision model, or choose direct execution in advanced settings.',
+    configurePlanner: 'Configure decision model',
+
     welcomeTitle: 'Welcome to AutoGLM',
     connectDevice: 'Connect an ADB device to get started',
     configuration: 'Configuration',
@@ -426,7 +437,7 @@ export const en = {
   },
   chatkit: {
     title: 'AI Assistant',
-    layeredAgent: 'Layered Agent Mode',
+    layeredAgent: 'Automatic planning',
     layeredAgentDesc:
       'Planner decomposes tasks into subtasks, executor handles each independently. You can see detailed tool calls.',
     modeLabel: 'Mode:',
