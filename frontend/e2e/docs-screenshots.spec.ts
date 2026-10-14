@@ -212,7 +212,7 @@ test.describe('Docs screenshots', () => {
     await page.waitForTimeout(1000);
 
     await shotDialog(page, 'settings-vision', async () => {
-      await page.getByRole('button', { name: '设置' }).click();
+      await page.getByRole('button', { name: '设置', exact: true }).click();
     });
     // Decision tab inside settings dialog
     await shot(page, 'settings-decision', async () => {
@@ -390,7 +390,7 @@ test.describe('Docs screenshots', () => {
     await expect(page.locator('textarea')).toBeVisible({ timeout: 15000 });
     await page.waitForTimeout(800);
     await shot(page, 'settings-agent-types', async () => {
-      await page.getByRole('button', { name: '设置' }).click();
+      await page.getByRole('button', { name: '设置', exact: true }).click();
       const dialog = page.locator('[role="dialog"]').first();
       await dialog.waitFor({ state: 'visible', timeout: 8000 });
       await page.waitForTimeout(400);

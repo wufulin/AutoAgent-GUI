@@ -207,6 +207,12 @@ export const en = {
     },
   },
   deviceMonitor: {
+    screenTitle: 'Phone screen',
+    displaySettings: 'Display settings',
+    displayMode: 'Display mode',
+    widthLabel: 'Panel width',
+    readOnly: 'View only',
+    dismissNotice: 'Dismiss notice',
     controlTimeout: 'Video connection timed out',
     controlBackendOld: 'Update the backend to enable continuous control',
     controlRecoveryFailed: 'Could not recover control',

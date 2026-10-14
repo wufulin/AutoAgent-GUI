@@ -200,6 +200,12 @@ export const zh = {
     },
   },
   deviceMonitor: {
+    screenTitle: '手机画面',
+    displaySettings: '显示设置',
+    displayMode: '显示模式',
+    widthLabel: '面板宽度',
+    readOnly: '仅查看',
+    dismissNotice: '关闭提示',
     controlTimeout: '视频连接超时',
     controlBackendOld: '请更新后端以启用持续控制',
     controlRecoveryFailed: '恢复控制失败',

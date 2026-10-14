@@ -149,6 +149,9 @@ test('renders H.264 and releases a pointer dragged outside the canvas', async ({
     height: number;
   }[] = [];
   await page.routeWebSocket(/\/socket\.io\//, ws => {
+    let frameNumber = 0;
+    let nextFrame: ReturnType<typeof setTimeout> | undefined;
+    ws.onClose(() => clearTimeout(nextFrame));
     ws.send(
       '0' +
         JSON.stringify({
@@ -198,21 +201,24 @@ test('renders H.264 and releases a pointer dragged outside the canvas', async ({
           );
         }
       }
-      if (raw.startsWith('431')) {
-        ws.send(
-          '451-2' +
-            JSON.stringify([
-              'video-data',
-              {
-                type: 'data',
-                keyframe: true,
-                pts: 0,
-                epoch: 1,
-                data: { _placeholder: true, num: 0 },
-              },
-            ])
-        );
-        ws.send(Buffer.from(encoded));
+      if (raw.startsWith('43')) {
+        nextFrame = setTimeout(() => {
+          frameNumber += 1;
+          ws.send(
+            `451-${frameNumber + 1}` +
+              JSON.stringify([
+                'video-data',
+                {
+                  type: 'data',
+                  keyframe: true,
+                  pts: frameNumber * 50000,
+                  epoch: 1,
+                  data: { _placeholder: true, num: 0 },
+                },
+              ])
+          );
+          ws.send(Buffer.from(encoded));
+        }, 50);
       }
     });
   });
@@ -312,9 +318,37 @@ test('renders H.264 and releases a pointer dragged outside the canvas', async ({
   const canvas = page.locator('#control-test canvas');
   await expect(canvas).toBeVisible();
   await expect(page.locator('#control-test')).toContainText('FPS');
+  const header = page.getByTestId('phone-monitor-header');
+  const footer = page.getByTestId('phone-monitor-status');
+  const settings = page.getByTestId('phone-monitor-settings');
+  const settingsButton = header.getByRole('button');
+  const assertOutsideScreen = async () => {
+    const [top, screen, bottom] = await Promise.all([
+      header.boundingBox(),
+      canvas.boundingBox(),
+      footer.boundingBox(),
+    ]);
+    if (!top || !screen || !bottom) throw new Error('Missing monitor region');
+    expect(top.y + top.height).toBeLessThanOrEqual(screen.y + 1);
+    expect(screen.y + screen.height).toBeLessThanOrEqual(bottom.y + 1);
+    expect(bottom.y + bottom.height).toBeLessThanOrEqual(701);
+    if (await settings.isVisible()) {
+      const box = await settings.boundingBox();
+      if (!box) throw new Error('Missing settings region');
+      expect(box.y + box.height).toBeLessThanOrEqual(screen.y + 1);
+    }
+  };
+  await assertOutsideScreen();
+  await settingsButton.press('Enter');
+  await expect(settingsButton).toHaveAttribute('aria-expanded', 'true');
+  await expect(settings).toBeVisible();
+  await assertOutsideScreen();
+  expect(actions).toHaveLength(0);
+  await settingsButton.click();
+  await expect(settings).not.toBeVisible();
   const bounds = await canvas.boundingBox();
   if (!bounds) throw new Error('No rendered canvas');
-  // Collapsed hover controls must not intercept the upper phone screen.
+  // The upper and lower screen edges remain touchable without overlays.
   await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + 40);
   await expect
     .poll(() => actions.filter(action => action.action === 'up').length)
@@ -345,4 +379,47 @@ test('renders H.264 and releases a pointer dragged outside the canvas', async ({
     .poll(() => actions.filter(action => action.action === 'cancel').length)
     .toBe(1);
   await page.mouse.up();
+  await page.mouse.click(
+    bounds.x + bounds.width / 2,
+    bounds.y + bounds.height - 2
+  );
+  await expect
+    .poll(() => actions.filter(action => action.action === 'up').length)
+    .toBe(3);
+  // A narrow panel and screenshot mode keep controls outside the image.
+  await page.evaluate(() => {
+    const panel = document.querySelector('[data-testid="phone-monitor"]');
+    if (panel instanceof HTMLElement) panel.style.width = '240px';
+  });
+  await settingsButton.click();
+  await assertOutsideScreen();
+  await page.route('**/api/screenshot', route =>
+    route.fulfill({
+      json: {
+        success: true,
+        image:
+          'iVBORw0KGgoAAAANSUhEUgAAAEAAAACACAIAAAA04/g9AAAA4ElEQVR4nNXOQREAIAzAsFJNqEQbohCxB9coyNrnUiZxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEufvwNQDLV8CirCOi1cAAAAASUVORK5CYII=',
+        width: 64,
+        height: 128,
+      },
+    })
+  );
+  await settings.getByRole('button').nth(2).click();
+  const screenshot = page.locator('#control-test img');
+  await expect(screenshot).toBeVisible();
+  await expect
+    .poll(() =>
+      screenshot.evaluate(image => (image as HTMLImageElement).naturalWidth)
+    )
+    .toBe(64);
+  await expect(footer).not.toContainText('FPS');
+  const imageBox = await screenshot.boundingBox();
+  const settingsBox = await settings.boundingBox();
+  const footerBox = await footer.boundingBox();
+  if (!imageBox || !settingsBox || !footerBox)
+    throw new Error('Missing screenshot region');
+  expect(settingsBox.y + settingsBox.height).toBeLessThanOrEqual(
+    imageBox.y + 1
+  );
+  expect(imageBox.y + imageBox.height).toBeLessThanOrEqual(footerBox.y + 1);
 });
