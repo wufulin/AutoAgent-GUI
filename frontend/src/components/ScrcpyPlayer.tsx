@@ -16,6 +16,11 @@ import {
 } from '../lib/phone-control';
 
 export type VideoQuality = 'balanced' | 'smooth' | 'data-saver';
+export interface PlaybackStats {
+  status: 'connecting' | 'video' | 'stalled' | 'error';
+  fps: number;
+  rtt: number;
+}
 const PROFILES = {
   balanced: { maxSize: 1280, bitRate: 4_000_000, maxFps: 20 },
   smooth: { maxSize: 1280, bitRate: 4_000_000, maxFps: 30 },
@@ -34,6 +39,7 @@ interface ScrcpyPlayerProps {
   onStreamReady?: (stream: { close: () => void } | null) => void;
   isVisible?: boolean;
   quality?: VideoQuality;
+  onPlaybackStats?: (stats: PlaybackStats) => void;
 }
 interface VideoMetadata {
   codec?: number;
@@ -58,6 +64,7 @@ export function ScrcpyPlayer({
   onStreamReady,
   isVisible = true,
   quality = 'balanced',
+  onPlaybackStats,
 }: ScrcpyPlayerProps) {
   const text = useTranslation().deviceMonitor;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -67,11 +74,15 @@ export function ScrcpyPlayer({
   const pointerRef = useRef<number | null>(null);
   const callbacks = useRef({ onFallback, onTapError, onStreamReady, text });
   const recoveryRequestedRef = useRef(false);
-  const [status, setStatus] = useState('connecting');
+  const [status, setStatus] = useState<PlaybackStats['status']>('connecting');
   const [error, setError] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
   const [metrics, setMetrics] = useState({ fps: 0, rtt: 0 });
   const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    onPlaybackStats?.({ status, ...metrics });
+  }, [onPlaybackStats, status, metrics]);
 
   useEffect(() => {
     callbacks.current = { onFallback, onTapError, onStreamReady, text };
@@ -99,6 +110,7 @@ export function ScrcpyPlayer({
     queueMicrotask(() => {
       setStatus('connecting');
       setError(null);
+      setMetrics({ fps: 0, rtt: 0 });
     });
 
     const releaseDecoder = () => {
@@ -373,10 +385,11 @@ export function ScrcpyPlayer({
     });
   };
   return (
-    <div className={`relative w-full h-full min-h-0 ${className || ''}`}>
+    <div className={`flex w-full h-full min-h-0 flex-col ${className || ''}`}>
       <div
         ref={containerRef}
-        className="w-full h-full min-h-0 flex items-center justify-center touch-none select-none"
+        data-testid="phone-video-surface"
+        className="w-full min-h-0 flex-1 overflow-hidden flex items-center justify-center touch-none select-none"
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}
@@ -385,21 +398,9 @@ export function ScrcpyPlayer({
         onWheel={wheel}
         onContextMenu={event => event.preventDefault()}
       />
-      <div
-        className="absolute bottom-4 right-3 rounded bg-background/90 px-2 text-xs pointer-events-none"
-        title={text.controlMetricHelp}
-      >
-        {status === 'video'
-          ? `${metrics.fps} FPS · ${text.controlMetric} ${Math.round(metrics.rtt)} ms`
-          : status === 'stalled'
-            ? text.controlStalled
-            : status === 'connecting'
-              ? text.controlConnecting
-              : ''}
-      </div>
       {error && (
         <div
-          className="absolute inset-x-2 top-14 rounded bg-background/95 p-3 text-sm"
+          className="shrink-0 border-t bg-background p-3 text-sm"
           role="alert"
         >
           <p>{error}</p>

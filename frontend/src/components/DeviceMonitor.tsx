@@ -1,23 +1,20 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
-import { ScrcpyPlayer, type VideoQuality } from './ScrcpyPlayer';
-import { WidthControl } from './WidthControl';
+import React, { useRef, useEffect, useCallback, useId, useState } from 'react';
+import {
+  ScrcpyPlayer,
+  type PlaybackStats,
+  type VideoQuality,
+} from './ScrcpyPlayer';
 import { ResizableHandle } from './ResizableHandle';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useScreenshotPolling } from '../hooks/useScreenshotPolling';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { useTranslation } from '../lib/i18n-context';
 import {
-  Video,
-  Image as ImageIcon,
-  MonitorPlay,
-  ChevronLeft,
-  ChevronRight,
-  Fingerprint,
-  ArrowUpDown,
+  Circle,
+  Monitor,
+  Settings2,
   AlertCircle,
-  CheckCircle2,
   Loader2,
   X,
 } from 'lucide-react';
@@ -34,10 +31,6 @@ interface DeviceMonitorProps {
   className?: string;
 }
 
-function getScreenshotPollDelay(mode: 'auto' | 'video' | 'screenshot'): number {
-  return mode === 'screenshot' ? 750 : 1200;
-}
-
 export function DeviceMonitor({
   deviceId,
   serial: _serial,
@@ -46,19 +39,14 @@ export function DeviceMonitor({
   className = '',
 }: DeviceMonitorProps) {
   const t = useTranslation();
-
+  const settingsId = useId();
   const isRemoteDevice = connectionType === 'remote';
   const [useVideoStream, setUseVideoStream] = useState(!isRemoteDevice);
   const [videoStreamFailed, setVideoStreamFailed] = useState(false);
   const [displayMode, setDisplayMode] = useState<
     'auto' | 'video' | 'screenshot'
   >(isRemoteDevice ? 'screenshot' : 'auto');
-  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
-  const [feedbackType, setFeedbackType] = useState<
-    'tap' | 'swipe' | 'error' | 'success'
-  >('success');
-  const [showControlArea, setShowControlArea] = useState(false);
-  const [showControls, setShowControls] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [panelWidth, setPanelWidth] = useLocalStorage<number | 'auto'>(
     'device-monitor-width',
     320
@@ -68,64 +56,27 @@ export function DeviceMonitor({
     'balanced'
   );
   const [videoReady, setVideoReady] = useState(false);
+  const [stats, setStats] = useState<PlaybackStats>({
+    status: 'connecting',
+    fps: 0,
+    rtt: 0,
+  });
   const [fallbackReason, setFallbackReason] = useState<string | null>(null);
   const [showWebCodecsWarning, setShowWebCodecsWarning] = useState(false);
-
   const videoStreamRef = useRef<{ close: () => void } | null>(null);
-  const feedbackTimeoutRef = useRef<number | null>(null);
-  const controlsTimeoutRef = useRef<number | null>(null);
-  const shouldPollScreenshots =
-    isVisible &&
-    (displayMode === 'screenshot' ||
-      (displayMode === 'auto' && videoStreamFailed));
+  const showVideo =
+    displayMode === 'video' ||
+    (displayMode === 'auto' && useVideoStream && !videoStreamFailed);
   const { screenshot } = useScreenshotPolling({
     deviceId,
-    enabled: shouldPollScreenshots,
-    pollDelayMs: getScreenshotPollDelay(displayMode),
+    enabled: isVisible && !showVideo,
+    pollDelayMs: displayMode === 'screenshot' ? 750 : 1200,
   });
-
-  const showFeedback = (
-    message: string,
-    duration = 2000,
-    type: 'tap' | 'swipe' | 'error' | 'success' = 'success'
-  ) => {
-    if (feedbackTimeoutRef.current) {
-      clearTimeout(feedbackTimeoutRef.current);
-    }
-    setFeedbackType(type);
-    setFeedbackMessage(message);
-    feedbackTimeoutRef.current = setTimeout(() => {
-      setFeedbackMessage(null);
-    }, duration);
-  };
-
-  const handleMouseEnter = () => {
-    if (controlsTimeoutRef.current) {
-      clearTimeout(controlsTimeoutRef.current);
-    }
-    setShowControlArea(true);
-  };
-
-  const handleMouseLeave = () => {
-    controlsTimeoutRef.current = setTimeout(() => {
-      setShowControlArea(false);
-    }, 500);
-  };
-
-  const toggleControls = () => {
-    setShowControls(prev => !prev);
-  };
-
-  const handleWidthChange = (width: number | 'auto') => {
-    setPanelWidth(width);
-  };
 
   const handleResize = (deltaX: number) => {
     if (typeof panelWidth !== 'number') return;
-    const newWidth = Math.min(640, Math.max(240, panelWidth + deltaX));
-    setPanelWidth(newWidth);
+    setPanelWidth(Math.min(640, Math.max(240, panelWidth + deltaX)));
   };
-
   const handleVideoStreamReady = useCallback(
     (stream: { close: () => void } | null) => {
       videoStreamRef.current = stream;
@@ -133,21 +84,17 @@ export function DeviceMonitor({
     },
     []
   );
-
   const handleFallback = useCallback(
     (reason?: string) => {
       setVideoStreamFailed(true);
       setUseVideoStream(false);
       setFallbackReason(reason || null);
-
-      // Show warning only when user actively chose video mode
       if (displayMode === 'video' && reason && shouldShowWebCodecsWarning()) {
         setShowWebCodecsWarning(true);
       }
     },
     [displayMode]
   );
-
   const toggleDisplayMode = (mode: 'auto' | 'video' | 'screenshot') => {
     setDisplayMode(mode);
     if (mode !== 'screenshot') {
@@ -155,321 +102,275 @@ export function DeviceMonitor({
       setVideoStreamFailed(false);
     }
   };
-
-  useEffect(() => {
-    return () => {
-      if (feedbackTimeoutRef.current) {
-        clearTimeout(feedbackTimeoutRef.current);
-      }
-      if (controlsTimeoutRef.current) {
-        clearTimeout(controlsTimeoutRef.current);
-      }
-      if (videoStreamRef.current) {
-        videoStreamRef.current.close();
-      }
-    };
-  }, []);
+  useEffect(() => () => videoStreamRef.current?.close(), []);
 
   const getReasonMessage = (reason: string): string => {
     const messages: Record<string, string> = {
-      insecure_context:
-        t.deviceMonitor?.requireHttpsOrLocalhost ||
-        '视频流需要 HTTPS 或 localhost 环境。建议下载桌面应用以获得完整功能。',
-      browser_unsupported:
-        t.deviceMonitor?.browserNotSupported ||
-        '当前浏览器不支持 WebCodecs API。请使用最新版 Chrome 或 Edge 浏览器。',
-      decoder_error:
-        t.deviceMonitor?.decoderInitFailed || '视频解码器初始化失败。',
-      decoder_unsupported:
-        t.deviceMonitor?.codecNotSupported || '设备编解码器不支持。',
+      insecure_context: t.deviceMonitor.requireHttpsOrLocalhost,
+      browser_unsupported: t.deviceMonitor.browserNotSupported,
+      decoder_error: t.deviceMonitor.decoderInitFailed,
+      decoder_unsupported: t.deviceMonitor.codecNotSupported,
     };
-    return messages[reason] || t.deviceMonitor?.unknownError || '未知错误';
+    return messages[reason] || t.deviceMonitor.unknownError;
   };
-
-  const widthStyle =
-    typeof panelWidth === 'number' ? `${panelWidth}px` : 'auto';
+  const modeLabel =
+    displayMode === 'auto'
+      ? `${t.devicePanel.auto} · ${showVideo ? (videoReady ? t.devicePanel.video : '…') : t.devicePanel.image}`
+      : displayMode === 'video'
+        ? t.devicePanel.video
+        : t.devicePanel.image;
+  const selectClass =
+    'h-8 min-w-0 w-full rounded-md border bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
   return (
     <Card
-      className={`flex-shrink-0 relative min-h-0 overflow-hidden bg-background ${className}`}
+      data-testid="phone-monitor"
+      className={`flex flex-col flex-shrink-0 relative min-h-0 overflow-hidden bg-background ${className}`}
       style={{
-        width: widthStyle,
+        width: typeof panelWidth === 'number' ? `${panelWidth}px` : 'auto',
         minWidth: typeof panelWidth === 'number' ? undefined : '240px',
         maxWidth: typeof panelWidth === 'number' ? undefined : '640px',
       }}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
     >
-      {/* Resizable handle - left edge */}
       {typeof panelWidth === 'number' && (
         <ResizableHandle
           onResize={handleResize}
           minWidth={240}
           maxWidth={640}
-          className="z-20"
         />
       )}
-      {/* Toggle and controls - shown on hover */}
-      <div
-        className={`absolute top-4 right-4 z-10 transition-opacity duration-200 ${
-          showControlArea ? 'opacity-100' : 'opacity-0 pointer-events-none'
-        }`}
+      <header
+        data-testid="phone-monitor-header"
+        className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b px-3 py-2"
       >
-        <div className="flex items-start gap-2 pointer-events-none">
-          {/* Combined controls container - both controls slide together */}
+        <div className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+          <Monitor
+            aria-hidden="true"
+            className="size-4 shrink-0 text-slate-600 dark:text-slate-300"
+          />
+          <span className="truncate">{t.deviceMonitor.screenTitle}</span>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 shrink-0 gap-1.5 px-2 text-xs shadow-none"
+          onClick={() => setShowSettings(value => !value)}
+          aria-expanded={showSettings}
+          aria-controls={settingsId}
+        >
+          <Settings2 aria-hidden="true" className="size-3.5" />
+          {t.deviceMonitor.displaySettings}
+        </Button>
+      </header>
+      {showSettings && (
+        <section
+          id={settingsId}
+          aria-label={t.deviceMonitor.displaySettings}
+          data-testid="phone-monitor-settings"
+          className="max-h-[45%] shrink-0 space-y-3 overflow-y-auto border-b bg-muted/30 p-3"
+        >
           <div
-            className={`flex flex-col items-end gap-2 transition-all duration-300 ${
-              showControlArea && showControls
-                ? 'opacity-100 translate-x-0 pointer-events-auto'
-                : 'opacity-0 translate-x-4 pointer-events-none'
-            }`}
+            role="group"
+            aria-label={t.deviceMonitor.displayMode}
+            className="flex flex-wrap gap-1"
           >
-            {/* Display mode controls */}
-            <div className="flex items-center gap-1 bg-popover/90 backdrop-blur rounded-xl p-1 shadow-lg border border-border">
-              {!isRemoteDevice && (
+            {(['auto', 'video', 'screenshot'] as const)
+              .filter(mode => !isRemoteDevice || mode === 'screenshot')
+              .map(mode => (
                 <Button
-                  variant="ghost"
+                  key={mode}
+                  variant={displayMode === mode ? 'secondary' : 'ghost'}
                   size="sm"
-                  onClick={() => toggleDisplayMode('auto')}
-                  className={`h-7 px-3 text-xs rounded-lg transition-colors ${
-                    displayMode === 'auto'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-foreground hover:bg-accent hover:text-accent-foreground'
-                  }`}
+                  className="h-7 px-3 text-xs"
+                  aria-pressed={displayMode === mode}
+                  onClick={() => toggleDisplayMode(mode)}
                 >
-                  {t.devicePanel?.auto || 'Auto'}
+                  {mode === 'auto'
+                    ? t.devicePanel.auto
+                    : mode === 'video'
+                      ? t.devicePanel.video
+                      : t.devicePanel.image}
                 </Button>
-              )}
-              {!isRemoteDevice && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => toggleDisplayMode('video')}
-                  className={`h-7 px-3 text-xs rounded-lg transition-colors ${
-                    displayMode === 'video'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-foreground hover:bg-accent hover:text-accent-foreground'
-                  }`}
-                >
-                  <Video className="w-3 h-3 mr-1" />
-                  {t.devicePanel?.video || 'Video'}
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => toggleDisplayMode('screenshot')}
-                className={`h-7 px-3 text-xs rounded-lg transition-colors ${
-                  displayMode === 'screenshot'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-foreground hover:bg-accent hover:text-accent-foreground'
-                }`}
-              >
-                <ImageIcon className="w-3 h-3 mr-1" />
-                {t.devicePanel?.image || 'Image'}
-              </Button>
-            </div>
-
+              ))}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
             {!isRemoteDevice && (
+              <label className="min-w-0 space-y-1 text-xs text-muted-foreground">
+                <span>{t.deviceMonitor.qualityLabel}</span>
+                <select
+                  aria-label={t.deviceMonitor.qualityLabel}
+                  className={selectClass}
+                  value={quality}
+                  onChange={event =>
+                    setQuality(event.target.value as VideoQuality)
+                  }
+                >
+                  <option value="balanced">
+                    {t.deviceMonitor.qualityBalanced}
+                  </option>
+                  <option value="smooth">
+                    {t.deviceMonitor.qualitySmooth}
+                  </option>
+                  <option value="data-saver">
+                    {t.deviceMonitor.qualityDataSaver}
+                  </option>
+                </select>
+              </label>
+            )}
+            <label className="min-w-0 space-y-1 text-xs text-muted-foreground">
+              <span>{t.deviceMonitor.widthLabel}</span>
               <select
-                aria-label={t.deviceMonitor.qualityLabel}
-                className="rounded border bg-background p-1 text-xs"
-                value={quality}
+                aria-label={t.deviceMonitor.widthLabel}
+                className={selectClass}
+                value={panelWidth}
                 onChange={event =>
-                  setQuality(event.target.value as VideoQuality)
+                  setPanelWidth(
+                    event.target.value === 'auto'
+                      ? 'auto'
+                      : Number(event.target.value)
+                  )
                 }
               >
-                <option value="balanced">
-                  {t.deviceMonitor.qualityBalanced}
-                </option>
-                <option value="smooth">{t.deviceMonitor.qualitySmooth}</option>
-                <option value="data-saver">
-                  {t.deviceMonitor.qualityDataSaver}
-                </option>
+                {typeof panelWidth === 'number' &&
+                  ![320, 400, 480].includes(panelWidth) && (
+                    <option value={panelWidth}>{panelWidth} px</option>
+                  )}
+                <option value={320}>{t.deviceMonitor.compact}</option>
+                <option value={400}>{t.deviceMonitor.standard}</option>
+                <option value={480}>{t.deviceMonitor.wide}</option>
+                <option value="auto">{t.deviceMonitor.auto}</option>
               </select>
-            )}
-            {/* Width controls - aligned with display mode controls */}
-            <WidthControl
-              currentWidth={panelWidth}
-              onWidthChange={handleWidthChange}
-            />
+            </label>
           </div>
-
-          {/* Toggle button - always visible in top-right */}
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggleControls}
-            className={`h-8 w-8 rounded-full bg-popover/90 backdrop-blur border border-border shadow-lg hover:bg-accent ${showControlArea ? 'pointer-events-auto' : ''}`}
-            title={showControls ? 'Hide controls' : 'Show controls'}
-          >
-            {showControls ? (
-              <ChevronRight className="w-4 h-4" />
-            ) : (
-              <ChevronLeft className="w-4 h-4" />
-            )}
-          </Button>
-        </div>
-      </div>
-
-      {/* Current mode indicator - bottom left */}
-      <div className="absolute bottom-4 left-4 z-10">
-        <Badge
-          variant="secondary"
-          className="bg-white/90 text-slate-700 border border-slate-200 dark:bg-slate-900/90 dark:text-slate-300 dark:border-slate-700"
+        </section>
+      )}
+      {showWebCodecsWarning && fallbackReason && (
+        <div
+          role="alert"
+          className="shrink-0 border-b bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100"
         >
-          {displayMode === 'auto' &&
-            `${t.devicePanel?.auto || 'Auto'} · ${videoStreamFailed ? t.devicePanel?.image || 'Image' : videoReady ? t.devicePanel?.video || 'Video' : '…'}`}
-          {displayMode === 'video' && (
-            <>
-              <MonitorPlay className="w-3 h-3 mr-1" />
-              {t.devicePanel?.video || 'Video'}
-            </>
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2 font-medium">
+              <AlertCircle className="size-4" />
+              {t.deviceMonitor.videoUnavailableWarning}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6"
+              aria-label={t.deviceMonitor.dismissNotice}
+              onClick={() => {
+                setShowWebCodecsWarning(false);
+                dismissWebCodecsWarning();
+              }}
+            >
+              <X className="size-3" />
+            </Button>
+          </div>
+          <p className="mt-1">{getReasonMessage(fallbackReason)}</p>
+          {fallbackReason === 'insecure_context' && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2 h-7 text-xs"
+              onClick={() =>
+                window.open(
+                  'https://github.com/suyiiyii/AutoGLM-GUI/releases',
+                  '_blank',
+                  'noopener,noreferrer'
+                )
+              }
+            >
+              {t.deviceMonitor.downloadElectron}
+            </Button>
           )}
-          {displayMode === 'screenshot' && (
-            <>
-              <ImageIcon className="w-3 h-3 mr-1" />
-              {t.devicePanel?.imageRefresh || 'Screenshot'}
-            </>
-          )}
-        </Badge>
-      </div>
-
-      {/* Feedback message */}
-      {feedbackMessage && (
-        <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2 px-3 py-2 bg-[#1d9bf0] text-white text-sm rounded-xl shadow-lg">
-          {feedbackType === 'error' && <AlertCircle className="w-4 h-4" />}
-          {feedbackType === 'tap' && <Fingerprint className="w-4 h-4" />}
-          {feedbackType === 'swipe' && <ArrowUpDown className="w-4 h-4" />}
-          {feedbackType === 'success' && <CheckCircle2 className="w-4 h-4" />}
-          <span>{feedbackMessage}</span>
         </div>
       )}
-
-      {/* Video stream */}
-      {displayMode === 'video' ||
-      (displayMode === 'auto' && useVideoStream && !videoStreamFailed) ? (
-        <>
-          {/* WebCodecs unavailability warning banner */}
-          {showWebCodecsWarning && fallbackReason && (
-            <div className="absolute top-0 left-0 right-0 z-20 bg-amber-50/95 dark:bg-amber-950/95 border-b border-amber-200 dark:border-amber-800 backdrop-blur-sm">
-              <div className="px-4 py-3 flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-                <div className="flex-1 space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-medium text-amber-900 dark:text-amber-100">
-                      {t.deviceMonitor?.videoUnavailableWarning ||
-                        '视频流不可用'}
-                    </p>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5 -mr-2 hover:bg-amber-100 dark:hover:bg-amber-900"
-                      onClick={() => {
-                        setShowWebCodecsWarning(false);
-                        dismissWebCodecsWarning();
-                      }}
-                    >
-                      <X className="w-3 h-3" />
-                    </Button>
-                  </div>
-                  <p className="text-xs text-amber-700 dark:text-amber-300">
-                    {getReasonMessage(fallbackReason)}
-                  </p>
-                  {fallbackReason === 'insecure_context' && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs"
-                      onClick={() =>
-                        window.open(
-                          'https://github.com/suyiiyii/AutoGLM-GUI/releases',
-                          '_blank'
-                        )
-                      }
-                    >
-                      {t.deviceMonitor?.downloadElectron || '下载桌面应用'}
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
+      {!showVideo && screenshot?.is_sensitive && (
+        <p
+          role="status"
+          className="shrink-0 border-b bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100"
+        >
+          {t.devicePanel.sensitiveContent}
+        </p>
+      )}
+      <div
+        data-testid="phone-monitor-stage"
+        className="min-h-0 flex-1 overflow-hidden bg-muted/10 px-1"
+      >
+        {showVideo ? (
           <ScrcpyPlayer
             deviceId={deviceId}
             quality={quality}
             className="w-full h-full"
-            enableControl={true}
+            enableControl
             onFallback={handleFallback}
-            onTapSuccess={() =>
-              showFeedback(t.devicePanel?.tapped || 'Tapped', 2000, 'tap')
-            }
-            onTapError={error =>
-              showFeedback(
-                (t.devicePanel?.tapError || 'Tap error: {error}').replace(
-                  '{error}',
-                  error
-                ),
-                3000,
-                'error'
-              )
-            }
-            onSwipeSuccess={() =>
-              showFeedback(t.devicePanel?.swiped || 'Swiped', 2000, 'swipe')
-            }
-            onSwipeError={error =>
-              showFeedback(
-                (t.devicePanel?.swipeError || 'Swipe error: {error}').replace(
-                  '{error}',
-                  error
-                ),
-                3000,
-                'error'
-              )
-            }
             onStreamReady={handleVideoStreamReady}
+            onPlaybackStats={setStats}
             fallbackTimeout={20000}
-            isVisible={isVisible} // ✅ 新增：传递 isVisible prop
+            isVisible={isVisible}
           />
-        </>
-      ) : (
-        <div className="w-full h-full flex items-center justify-center bg-muted/30 min-h-0">
-          {screenshot && screenshot.success ? (
-            <div className="relative w-full h-full flex items-center justify-center min-h-0">
+        ) : (
+          <div className="flex h-full min-h-0 w-full items-center justify-center">
+            {screenshot?.success ? (
               <img
                 src={`data:image/png;base64,${screenshot.image}`}
                 alt="Device Screenshot"
-                className="max-w-full max-h-full object-contain"
-                style={{
-                  width: screenshot.width > screenshot.height ? '100%' : 'auto',
-                  height:
-                    screenshot.width > screenshot.height ? 'auto' : '100%',
-                }}
+                className="h-full w-full object-contain"
               />
-              {screenshot.is_sensitive && (
-                <div className="absolute top-12 right-2 px-2 py-1 bg-yellow-500 text-white text-xs rounded-lg">
-                  {t.devicePanel?.sensitiveContent || 'Sensitive Content'}
-                </div>
-              )}
-            </div>
-          ) : screenshot?.error ? (
-            <div className="text-center text-destructive">
-              <AlertCircle className="w-8 h-8 mx-auto mb-2" />
-              <p className="font-medium">
-                {t.devicePanel?.screenshotFailed || 'Screenshot Failed'}
-              </p>
-              <p className="text-xs mt-1 opacity-60">{screenshot.error}</p>
-            </div>
+            ) : screenshot?.error ? (
+              <div
+                role="alert"
+                className="p-3 text-center text-sm text-destructive"
+              >
+                <AlertCircle className="mx-auto mb-2 size-6" />
+                {t.devicePanel.screenshotFailed}
+                <p className="mt-1 text-xs">{screenshot.error}</p>
+              </div>
+            ) : (
+              <div className="p-3 text-center text-sm text-muted-foreground">
+                <Loader2 className="mx-auto mb-2 size-6 animate-spin" />
+                {t.devicePanel.loading}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      <footer
+        data-testid="phone-monitor-status"
+        className="flex min-h-9 shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-t px-3 py-2 text-xs text-muted-foreground"
+      >
+        <span className="flex min-w-0 items-center gap-2" aria-live="polite">
+          <Circle
+            aria-hidden="true"
+            className={`size-2.5 shrink-0 fill-current ${showVideo && stats.status !== 'video' ? 'text-amber-500' : 'text-emerald-500'}`}
+          />
+          <span>{modeLabel}</span>
+        </span>
+        {showVideo ? (
+          stats.status === 'video' ? (
+            <span
+              className="flex items-center gap-3 whitespace-nowrap tabular-nums"
+              title={t.deviceMonitor.controlMetricHelp}
+            >
+              <span>{stats.fps} FPS</span>
+              <span aria-label={t.deviceMonitor.controlMetric}>
+                P95 {Math.round(stats.rtt)} ms
+              </span>
+            </span>
           ) : (
-            <div className="text-center text-muted-foreground">
-              <Loader2 className="w-8 h-8 mx-auto mb-2 animate-spin" />
-              <p className="text-sm">
-                {t.devicePanel?.loading || 'Loading...'}
-              </p>
-            </div>
-          )}
-        </div>
-      )}
+            <span role="status">
+              {stats.status === 'stalled'
+                ? t.deviceMonitor.controlStalled
+                : stats.status === 'error'
+                  ? t.deviceMonitor.controlDisconnected
+                  : t.deviceMonitor.controlConnecting}
+            </span>
+          )
+        ) : (
+          <span>{t.deviceMonitor.readOnly}</span>
+        )}
+      </footer>
     </Card>
   );
 }
