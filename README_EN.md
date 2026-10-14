@@ -247,9 +247,11 @@ AutoGLM-GUI supports controlling multiple Android devices simultaneously:
 5. **Observe** - Agent executes operations step-by-step, showing thinking process and actions in real-time
 
 <a id="mode-classic"></a>
-### 🌿 Classic Mode (Single Model / Open AutoGLM)
+### 🌿 Direct Execution (Legacy Classic Mode)
 
-This is the **default Open AutoGLM-Phone experience**: a single vision model completes the full loop of understanding → planning → observing → acting.
+Chat now defaults to layered automatic planning. Select **Settings → Advanced settings → Chat execution → Direct execution** and save for simple tasks or debugging. The choice stays in the current chat URL; cancel discards it. Legacy URLs, sessions, API defaults and scheduled tasks remain compatible. Missing decision-model configuration shows setup guidance.
+
+Direct execution provides the **original Open AutoGLM-Phone experience**: a single vision model completes the full loop of understanding → planning → observing → acting.
 
 - **Pros**: simplest setup, fastest to get started
 - **Best for**: clear goals with fewer steps (e.g., open an app, simple navigation)
