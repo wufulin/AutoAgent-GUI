@@ -120,16 +120,16 @@ test.describe('Task abort', () => {
       localStorage.setItem('locale', 'en');
     });
 
-    // A long-running task: the mock LLM keeps issuing taps and never finishes,
-    // so the agent stays RUNNING until we abort it.
+    // Execute one tap, then keep the second response streaming until we abort.
+    // The mock server emits one whitespace-delimited word every 10 ms.
+    // A 6000-word response outlasts this test's cancellation window, so a
+    // cold Windows UI cannot lose the abort button to the agent's step cap.
     await assertOk(
       await request.post(`${llm_url}/test/set_responses`, {
         data: [
           '分析当前界面，需要点击底部消息按钮。do(action="Tap", element=[499,966])',
-          '继续观察界面，执行下一步操作。do(action="Tap", element=[200,300])',
-          '继续执行任务，再点击一次。do(action="Tap", element=[400,500])',
-          '任务还在进行中，继续点击。do(action="Tap", element=[600,700])',
-          '继续推进任务。do(action="Tap", element=[100,200])',
+          '等待用户取消。 '.repeat(6000) +
+            'do(action="Tap", element=[200,300])',
         ],
       }),
       'set mock LLM responses'
@@ -166,11 +166,8 @@ test.describe('Task abort', () => {
           model_name: 'mock-glm-model',
           api_key: 'mock-key',
           agent_type: 'glm-async',
-          // Unlimited steps: the mock LLM cycles taps round-robin and never
-          // calls finish(), but the default cap (100 steps) would let the task
-          // reach a terminal state on fast runners before we click abort —
-          // hiding the abort button and flaking the test. With no cap the task
-          // stays RUNNING until we cancel it, matching this test's intent.
+          // Retain the configured unlimited-step preference; the slow mock
+          // response above establishes the running cancellation window.
           default_max_steps: null,
         },
       }),

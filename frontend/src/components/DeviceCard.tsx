@@ -45,6 +45,7 @@ interface DeviceCardProps {
   onDisconnectWifi?: () => Promise<void>;
   onNameUpdated?: () => void;
   showToast?: (message: string, type: ToastType) => void;
+  groupAction?: React.ReactNode;
 }
 
 export function DeviceCard({
@@ -61,6 +62,7 @@ export function DeviceCard({
   onDisconnectWifi,
   onNameUpdated,
   showToast,
+  groupAction,
 }: DeviceCardProps) {
   const t = useTranslation();
   const isOnline = status === 'device';
@@ -186,99 +188,76 @@ export function DeviceCard({
   return (
     <>
       <div
-        onClick={onClick}
-        role="button"
-        tabIndex={0}
-        onKeyDown={e => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            onClick();
-          }
-        }}
+        data-testid="device-card"
         className={`
-          group relative w-full text-left p-4 rounded-xl transition-all duration-200 cursor-pointer
-          border-2
+          group relative w-full text-left p-3 rounded-xl transition-all duration-200 cursor-pointer
+          border
           ${
             isActive
-              ? 'bg-slate-50 border-[#1d9bf0] dark:bg-slate-800/50 dark:border-[#1d9bf0]'
+              ? 'bg-sky-50/70 border-sky-300 dark:bg-sky-950/25 dark:border-sky-700'
               : 'bg-white border-transparent hover:border-slate-200 dark:bg-slate-900 dark:hover:border-slate-700'
           }
         `}
       >
-        {/* Active indicator bar */}
-        {isActive && (
-          <div className="absolute left-0 top-2 bottom-2 w-1 bg-[#1d9bf0] rounded-r" />
-        )}
+        <button
+          type="button"
+          data-testid="device-select"
+          aria-label={actualDisplayName}
+          aria-pressed={isActive}
+          title={`${actualDisplayName}\n${serial}`}
+          onClick={onClick}
+          className="absolute inset-0 rounded-xl cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1d9bf0]"
+        />
+        <div className="pointer-events-none flex items-center gap-2">
+          <div className="relative size-4 shrink-0 self-start mt-0.5">
+            <Smartphone
+              className={`w-4 h-4 flex-shrink-0 ${
+                isActive
+                  ? 'text-[#1d9bf0]'
+                  : 'text-slate-400 dark:text-slate-500'
+              }`}
+            />
 
-        <div className="flex items-center gap-3 pl-2">
-          {/* Agent status indicator with tooltip */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div
-                className={`relative flex-shrink-0 ${getAgentStatusClass()} w-3 h-3 rounded-full transition-all cursor-help ${
-                  isActive ? 'scale-110' : ''
-                }`}
-              />
-            </TooltipTrigger>
-            <TooltipContent side="right" sideOffset={8} className="max-w-xs">
-              <div className="space-y-1.5">
-                <p className="font-medium">
-                  {t.deviceCard.statusTooltip.title}
-                  {getCurrentStatusText()}
-                </p>
-                <div className="text-xs opacity-80 space-y-0.5">
-                  <p>{t.deviceCard.statusTooltip.legend.green}</p>
-                  <p>{t.deviceCard.statusTooltip.legend.yellow}</p>
-                  <p>{t.deviceCard.statusTooltip.legend.red}</p>
-                  <p>{t.deviceCard.statusTooltip.legend.gray}</p>
+            {/* Agent status indicator with tooltip */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div
+                  className={`pointer-events-auto z-10 ${getAgentStatusClass()} absolute -bottom-0.5 -right-0.5 w-2 h-2 ring-2 ring-white dark:ring-slate-950 rounded-full transition-all cursor-help ${
+                    isActive ? 'scale-110' : ''
+                  }`}
+                />
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8} className="max-w-xs">
+                <div className="space-y-1.5">
+                  <p className="font-medium">
+                    {t.deviceCard.statusTooltip.title}
+                    {getCurrentStatusText()}
+                  </p>
+                  <div className="text-xs opacity-80 space-y-0.5">
+                    <p>{t.deviceCard.statusTooltip.legend.green}</p>
+                    <p>{t.deviceCard.statusTooltip.legend.yellow}</p>
+                    <p>{t.deviceCard.statusTooltip.legend.red}</p>
+                    <p>{t.deviceCard.statusTooltip.legend.gray}</p>
+                  </div>
                 </div>
-              </div>
-            </TooltipContent>
-          </Tooltip>
-
+              </TooltipContent>
+            </Tooltip>
+          </div>
           {/* Device icon and info */}
           <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
             <div className="flex items-center gap-2">
-              <Smartphone
-                className={`w-4 h-4 flex-shrink-0 ${
-                  isActive
-                    ? 'text-[#1d9bf0]'
-                    : 'text-slate-400 dark:text-slate-500'
-                }`}
-              />
               <span
-                className={`font-semibold text-sm truncate ${
+                data-testid="device-name"
+                className={`min-w-0 flex-1 font-medium text-sm leading-5 line-clamp-2 break-words [overflow-wrap:anywhere] ${
                   isActive
                     ? 'text-slate-900 dark:text-slate-100'
                     : 'text-slate-700 dark:text-slate-300'
                 }`}
+                title={actualDisplayName}
               >
                 {actualDisplayName}
               </span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={handleEditClick}
-                    className="h-5 w-5 text-slate-400 hover:text-[#1d9bf0] opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <Edit className="w-3 h-3" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>{t.deviceCard.editName}</p>
-                </TooltipContent>
-              </Tooltip>
             </div>
-            <span
-              className={`text-xs font-mono truncate ${
-                isActive
-                  ? 'text-slate-500 dark:text-slate-400'
-                  : 'text-slate-400 dark:text-slate-500'
-              }`}
-            >
-              {serial}
-            </span>
           </div>
 
           {/* Right column: Connection type badges */}
@@ -289,7 +268,7 @@ export function DeviceCard({
                 return (
                   <Badge
                     variant="outline"
-                    className="text-xs border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"
+                    className="px-1.5 py-0 text-[10px] border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"
                   >
                     <Server className="w-2.5 h-2.5 mr-1" />
                     {t.deviceCard.remote || 'Remote'}
@@ -299,7 +278,7 @@ export function DeviceCard({
                 return (
                   <Badge
                     variant="outline"
-                    className="text-xs border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"
+                    className="px-1.5 py-0 text-[10px] border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"
                   >
                     <Wifi className="w-2.5 h-2.5 mr-1" />
                     {t.deviceCard.wifi || 'WiFi'}
@@ -309,7 +288,7 @@ export function DeviceCard({
                 return (
                   <Badge
                     variant="outline"
-                    className="text-xs border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"
+                    className="px-1.5 py-0 text-[10px] border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"
                   >
                     USB
                   </Badge>
@@ -318,18 +297,47 @@ export function DeviceCard({
               return null;
             })()}
           </div>
-
+        </div>
+        <div className="pointer-events-none mt-1.5 flex items-center gap-2 pl-6">
+          <span
+            title={serial}
+            className={`min-w-0 flex-1 text-[11px] font-mono truncate ${
+              isActive
+                ? 'text-slate-500 dark:text-slate-400'
+                : 'text-slate-400 dark:text-slate-500'
+            }`}
+          >
+            {serial}
+          </span>
           {/* Action buttons */}
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className="pointer-events-auto relative z-10 flex items-center gap-0.5 flex-shrink-0">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={t.deviceCard.editName}
+                  onClick={handleEditClick}
+                  className="h-6 w-6 text-slate-400 hover:text-[#1d9bf0]"
+                >
+                  <Edit className="w-3 h-3" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>{t.deviceCard.editName}</p>
+              </TooltipContent>
+            </Tooltip>
+            {groupAction}
             {onConnectWifi && isUsb && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label={t.deviceCard.connectViaWifi}
                     onClick={handleWifiClick}
                     disabled={loading}
-                    className="h-7 w-7 text-slate-400 hover:text-[#1d9bf0]"
+                    className="h-6 w-6 text-slate-400 hover:text-[#1d9bf0]"
                   >
                     {loading ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -349,9 +357,10 @@ export function DeviceCard({
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label={t.deviceCard.disconnectWifi}
                     onClick={handleDisconnectClick}
                     disabled={loading}
-                    className="h-7 w-7 text-slate-400 hover:text-orange-500"
+                    className="h-6 w-6 text-slate-400 hover:text-orange-500"
                   >
                     {loading ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -382,7 +391,7 @@ export function DeviceCard({
                   }
                 }}
                 disabled={loading}
-                className="h-7 w-7 text-slate-400 hover:text-red-500"
+                className="h-6 w-6 text-slate-400 hover:text-red-500"
                 title={t.deviceCard.removeRemote || '移除远程设备'}
               >
                 {loading ? (

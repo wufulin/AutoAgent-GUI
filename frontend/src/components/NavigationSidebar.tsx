@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/tooltip';
 import { useTranslation } from '../lib/i18n-context';
 import logoImage from '@/assets/logo.png';
+import { AppPreferencesMenu } from './AppPreferencesMenu';
 
 interface NavigationItem {
   id: string;
@@ -73,9 +74,9 @@ export function NavigationSidebar({ className }: NavigationSidebarProps) {
 
   return (
     <nav
-      className={`w-16 h-full flex flex-col bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800 ${className || ''}`}
+      className={`w-16 shrink-0 h-full min-h-0 flex flex-col bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800 ${className || ''}`}
     >
-      <div className="flex flex-col items-center py-4 gap-2">
+      <div className="flex flex-1 min-h-0 flex-col items-center overflow-y-auto py-4 gap-2">
         {/* Logo at top - clickable to navigate to /chat */}
         <div className="mb-4 pb-4 border-b border-slate-200 dark:border-slate-800 w-full flex justify-center">
           <Tooltip>
@@ -119,6 +120,9 @@ export function NavigationSidebar({ className }: NavigationSidebarProps) {
             </Tooltip>
           );
         })}
+      </div>
+      <div className="flex shrink-0 justify-center border-t p-2 dark:border-slate-800">
+        <AppPreferencesMenu />
       </div>
     </nav>
   );
