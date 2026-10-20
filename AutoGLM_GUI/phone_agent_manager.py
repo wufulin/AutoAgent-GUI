@@ -415,6 +415,7 @@ class PhoneAgentManager:
             base_url=effective_config.base_url,
             api_key=effective_config.api_key,
             model_name=effective_config.model_name,
+            temperature=effective_config.temperature,
         )
 
         # 使用实际的 device_id 创建 AgentConfig

@@ -79,6 +79,9 @@ export const en = {
       'Advanced setting: changes affect default behavior for subsequent tasks and may increase execution time and model API costs.',
     layeredMaxTurns: 'Layered Agent Max Turns',
     layeredMaxTurnsHint: 'Maximum turns for layered agent mode (minimum 1)',
+    temperature: 'Sampling Temperature',
+    temperatureHint:
+      'Sampling temperature (0-2). Use 0 for GLM / AutoGLM models; Kimi K3 requires exactly 1 or the API rejects the request.',
     agentGlmDesc:
       'Optimized for GLM models, mature and stable, suitable for most tasks',
     agentMaiDesc:

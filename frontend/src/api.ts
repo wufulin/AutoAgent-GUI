@@ -686,6 +686,8 @@ export interface ConfigResponse {
   model_name: string;
   api_key: string;
   source: string;
+  // 采样温度
+  temperature: number;
   // Agent 类型配置
   agent_type?: string;
   agent_config_params?: Record<string, unknown>;
@@ -702,6 +704,8 @@ export interface ConfigSaveRequest {
   base_url: string;
   model_name: string;
   api_key?: string;
+  // 采样温度
+  temperature?: number;
   // Agent 类型配置
   agent_type?: string;
   agent_config_params?: Record<string, unknown>;

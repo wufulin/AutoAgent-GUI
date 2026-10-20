@@ -29,6 +29,10 @@ from AutoGLM_GUI.logger import logger
 LAYERED_MAX_TURNS_DEFAULT = 50
 LAYERED_MAX_TURNS_MIN = 1
 
+TEMPERATURE_DEFAULT = 0.0
+TEMPERATURE_MIN = 0.0
+TEMPERATURE_MAX = 2.0
+
 
 # ==================== 配置源枚举 ====================
 
@@ -56,6 +60,7 @@ class ConfigFileData(TypedDict, total=False):
     base_url: str
     model_name: str
     api_key: str
+    temperature: float
     agent_type: str
     agent_config_params: dict[str, Any]
     default_max_steps: int | None
@@ -71,6 +76,9 @@ class ConfigModel(BaseModel):
     base_url: str = ""
     model_name: str = "autoglm-phone-9b"
     api_key: str = "EMPTY"
+
+    # 采样温度：部分模型只接受特定值（拒绝 0.0），因此必须可配置
+    temperature: float = TEMPERATURE_DEFAULT
 
     # Agent 类型配置
     agent_type: str = "glm-async"  # Agent type (e.g., "glm-async", "mai")
@@ -112,6 +120,16 @@ class ConfigModel(BaseModel):
             raise ValueError("model_name cannot be empty")
         return v.strip()
 
+    @field_validator("temperature")
+    @classmethod
+    def validate_temperature(cls, v: float) -> float:
+        """验证 temperature 范围."""
+        if not TEMPERATURE_MIN <= v <= TEMPERATURE_MAX:
+            raise ValueError(
+                f"temperature must be between {TEMPERATURE_MIN} and {TEMPERATURE_MAX}"
+            )
+        return v
+
     @field_validator("decision_base_url")
     @classmethod
     def validate_decision_base_url(cls, v: str | None) -> str | None:
@@ -152,6 +170,7 @@ class ConfigLayer:
     base_url: str | None = None
     model_name: str | None = None
     api_key: str | None = None
+    temperature: float | None = None
     # Agent 类型配置
     agent_type: str | None = None
     agent_config_params: dict[str, Any] | None = None
@@ -177,6 +196,7 @@ class ConfigLayer:
             "base_url": self.base_url,
             "model_name": self.model_name,
             "api_key": self.api_key,
+            "temperature": self.temperature,
             "agent_type": self.agent_type,
             "agent_config_params": self.agent_config_params,
             "default_max_steps": self.default_max_steps,
@@ -245,6 +265,7 @@ class UnifiedConfigManager:
             base_url="",
             model_name="autoglm-phone-9b",
             api_key="EMPTY",
+            temperature=TEMPERATURE_DEFAULT,
             agent_type="glm-async",
             agent_config_params=None,
             default_max_steps=100,
@@ -311,6 +332,7 @@ class UnifiedConfigManager:
         - AUTOGLM_BASE_URL
         - AUTOGLM_MODEL_NAME
         - AUTOGLM_API_KEY
+        - AUTOGLM_TEMPERATURE
         - AUTOGLM_DECISION_BASE_URL
         - AUTOGLM_DECISION_MODEL_NAME
         - AUTOGLM_DECISION_API_KEY
@@ -320,6 +342,14 @@ class UnifiedConfigManager:
         base_url = os.getenv("AUTOGLM_BASE_URL")
         model_name = os.getenv("AUTOGLM_MODEL_NAME")
         api_key = os.getenv("AUTOGLM_API_KEY")
+
+        temperature_str = os.getenv("AUTOGLM_TEMPERATURE")
+        temperature = None
+        if temperature_str:
+            try:
+                temperature = float(temperature_str)
+            except ValueError:
+                logger.warning("AUTOGLM_TEMPERATURE must be a number")
 
         # 决策模型环境变量
         decision_base_url = os.getenv("AUTOGLM_DECISION_BASE_URL")
@@ -346,6 +376,7 @@ class UnifiedConfigManager:
             "base_url": base_url if base_url else None,
             "model_name": model_name if model_name else None,
             "api_key": api_key if api_key else None,
+            "temperature": temperature,
             "default_max_steps": default_max_steps,
             "layered_max_turns": layered_max_turns,
             "decision_base_url": decision_base_url if decision_base_url else None,
@@ -417,6 +448,7 @@ class UnifiedConfigManager:
                 "base_url": config_data.get("base_url"),
                 "model_name": config_data.get("model_name"),
                 "api_key": config_data.get("api_key"),
+                "temperature": config_data.get("temperature"),
                 "agent_type": raw_agent_type,
                 "agent_config_params": config_data.get("agent_config_params"),
                 "default_max_steps": config_data.get("default_max_steps"),
@@ -455,6 +487,7 @@ class UnifiedConfigManager:
         base_url: str,
         model_name: str,
         api_key: str | None = None,
+        temperature: float | None = None,
         agent_type: str | None = None,
         agent_config_params: dict[str, Any] | None = None,
         default_max_steps: int | None = None,
@@ -473,6 +506,7 @@ class UnifiedConfigManager:
             base_url: Base URL
             model_name: 模型名称
             api_key: API key（可选）
+            temperature: 采样温度（可选，None 表示保留文件中已有的值）
             agent_type: Agent 类型（可选，如 "glm-async", "mai"）
             agent_config_params: Agent 特定配置参数（可选）
             default_max_steps: 默认最大执行步数（可选）
@@ -497,6 +531,8 @@ class UnifiedConfigManager:
 
             if api_key:
                 new_config["api_key"] = api_key
+            if temperature is not None:
+                new_config["temperature"] = temperature
             if agent_type is not None:
                 new_config["agent_type"] = agent_type
             if agent_config_params is not None:
@@ -527,6 +563,7 @@ class UnifiedConfigManager:
                     # 保留未提供的字段
                     preserve_keys = [
                         "api_key",
+                        "temperature",
                         "agent_type",
                         "agent_config_params",
                         "default_max_steps",
@@ -618,6 +655,7 @@ class UnifiedConfigManager:
             "base_url",
             "model_name",
             "api_key",
+            "temperature",
             "agent_type",
             "agent_config_params",
             "default_max_steps",
@@ -762,6 +800,7 @@ class UnifiedConfigManager:
         os.environ["AUTOGLM_BASE_URL"] = config.base_url
         os.environ["AUTOGLM_MODEL_NAME"] = config.model_name
         os.environ["AUTOGLM_API_KEY"] = config.api_key
+        os.environ["AUTOGLM_TEMPERATURE"] = str(config.temperature)
 
         if config.default_max_steps is None:
             os.environ.pop("AUTOGLM_DEFAULT_MAX_STEPS", None)
@@ -799,6 +838,7 @@ class UnifiedConfigManager:
                 "base_url": config.base_url,
                 "model_name": config.model_name,
                 "api_key": config.api_key,
+                "temperature": config.temperature,
                 "agent_type": config.agent_type,
                 "agent_config_params": config.agent_config_params,
                 "default_max_steps": config.default_max_steps,

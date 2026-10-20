@@ -137,6 +137,7 @@ class FakeConfigManager:
             base_url="http://localhost:8080/v1",
             model_name="autoglm-phone-9b",
             api_key="EMPTY",
+            temperature=0.0,
             agent_type="glm-async",
             agent_config_params={"thinking_mode": "fast"},
             default_max_steps=120,
@@ -307,6 +308,61 @@ def test_save_config_preserves_explicit_null_default_max_steps(
     assert env["config_manager"].save_kwargs["default_max_steps_set"] is True
     assert env["config_manager"].save_kwargs["layered_max_turns"] == 50
     assert env["config_manager"].save_kwargs["layered_max_turns_set"] is True
+
+
+def test_get_config_returns_temperature(env: dict[str, Any]) -> None:
+    env["config_manager"].effective_config.temperature = 1.0
+
+    response = env["client"].get("/api/config")
+
+    assert response.status_code == 200
+    assert response.json()["temperature"] == 1.0
+
+
+def test_save_config_forwards_temperature(env: dict[str, Any]) -> None:
+    response = env["client"].post(
+        "/api/config",
+        json={
+            "base_url": "http://localhost:8080/v1",
+            "model_name": "autoglm-phone-9b",
+            "temperature": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    assert env["config_manager"].save_kwargs is not None
+    assert env["config_manager"].save_kwargs["temperature"] == 1
+
+
+def test_save_config_omits_temperature_when_not_provided(env: dict[str, Any]) -> None:
+    response = env["client"].post(
+        "/api/config",
+        json={
+            "base_url": "http://localhost:8080/v1",
+            "model_name": "autoglm-phone-9b",
+        },
+    )
+
+    assert response.status_code == 200
+    assert env["config_manager"].save_kwargs is not None
+    assert env["config_manager"].save_kwargs["temperature"] is None
+
+
+@pytest.mark.parametrize("value", [-0.1, 2.1])
+def test_save_config_rejects_out_of_range_temperature(
+    env: dict[str, Any], value: float
+) -> None:
+    response = env["client"].post(
+        "/api/config",
+        json={
+            "base_url": "http://localhost:8080/v1",
+            "model_name": "autoglm-phone-9b",
+            "temperature": value,
+        },
+    )
+
+    assert response.status_code == 422
+    assert env["config_manager"].save_kwargs is None
 
 
 def test_chat_stream_emits_error_event_when_device_busy(env: dict[str, Any]) -> None:
