@@ -8,9 +8,10 @@ from typing_extensions import TypedDict
 from fastmcp import FastMCP
 
 from AutoGLM_GUI.adb_plus import capture_screenshot_async
+from AutoGLM_GUI.agents.base import AsyncAgentBase
 from AutoGLM_GUI.exceptions import DeviceNotAvailableError
 from AutoGLM_GUI.logger import logger
-from AutoGLM_GUI.prompts import MCP_SYSTEM_PROMPT_ZH
+from AutoGLM_GUI.prompts.layered import LAYERED_EXECUTOR_INSTRUCTIONS
 from AutoGLM_GUI.schemas import DeviceResponse, ScreenshotResponse
 from AutoGLM_GUI.task_store import TaskStatus, task_store
 
@@ -66,7 +67,12 @@ async def chat(device_id: str, message: str) -> ChatResult:
         original_system_prompt = agent.agent_config.system_prompt
 
         agent.agent_config.max_steps = MCP_MAX_STEPS
-        agent.agent_config.system_prompt = MCP_SYSTEM_PROMPT_ZH
+        if isinstance(agent, AsyncAgentBase):
+            agent.agent_config.system_prompt = (
+                agent.get_system_prompt() + "\n\n" + LAYERED_EXECUTOR_INSTRUCTIONS
+            )
+        else:
+            message = LAYERED_EXECUTOR_INSTRUCTIONS + "\n\n" + message
 
         try:
             # Reset agent before each chat to ensure clean state
@@ -86,12 +92,24 @@ async def chat(device_id: str, message: str) -> ChatResult:
                     "success": False,
                 }
 
-            return {"result": result, "steps": steps, "success": True}
+            return {
+                "result": result,
+                "steps": steps,
+                "success": not result.lstrip().startswith(
+                    (
+                        "ELEMENT_NOT_FOUND:",
+                        "WRONG_TARGET:",
+                        "STEP_LIMIT_EXCEEDED:",
+                        "SCREEN_CHANGED:",
+                    )
+                ),
+            }
 
         finally:
             # Restore original config
             agent.agent_config.max_steps = original_max_steps
             agent.agent_config.system_prompt = original_system_prompt
+            agent.reset()
 
     except DeviceBusyError:
         raise RuntimeError(f"Device {device_id} is busy. Please wait.")

@@ -175,7 +175,7 @@ def _env_capture_enabled(name: str, default: str = "1") -> bool:
     return os.getenv(name, default).strip().lower() not in _FALSE_VALUES
 
 
-def _capture_screenshot_mode() -> str:
+def capture_screenshot_mode() -> str:
     mode = os.getenv("AUTOGLM_TRACE_CAPTURE_SCREENSHOT", "artifact").strip().lower()
     if mode not in {"artifact", "off", "on_error"}:
         return "artifact"
@@ -289,17 +289,27 @@ def _step_screenshot_artifact(
     if not isinstance(screenshot, str) or not screenshot:
         return None
 
-    mode = _capture_screenshot_mode()
+    mode = capture_screenshot_mode()
     if mode == "off":
         return None
-    if mode == "on_error" and payload.get("success") is not False:
+    if (
+        mode == "on_error"
+        and payload.get("success") is not False
+        and not payload.get("subtask_failed")
+    ):
         return None
 
     artifact_index = step_index if step_index is not None else event_seq
+    name = f"step_{artifact_index:04d}_screen.png"
+    if payload.get("phone_call_id"):
+        name = (
+            f"phone_{payload['phone_call_id']}_{event_seq:04d}_"
+            f"{payload.get('phase', 'step')}_{name}"
+        )
     try:
         return write_trace_artifact(
             trace_id=trace_id,
-            name=f"step_{artifact_index:04d}_screen.png",
+            name=name,
             mime_type="image/png",
             data_base64=screenshot,
         )
@@ -431,7 +441,18 @@ def write_replay_event(
             "task": _task_metadata(task),
         }
 
-        if event_type == "step":
+        if event_type == "phone_agent":
+            record["phone_agent"] = {
+                **_normalize_step_payload(
+                    trace_id=trace_id, event_seq=event_seq, payload=payload
+                ),
+                "call_id": payload.get("phone_call_id"),
+                "phase": payload.get("phase"),
+                "screen_width": payload.get("screen_width"),
+                "screen_height": payload.get("screen_height"),
+                "subtask_failed": payload.get("subtask_failed"),
+            }
+        elif event_type == "step":
             record["step"] = _normalize_step_payload(
                 trace_id=trace_id,
                 event_seq=event_seq,
@@ -908,6 +929,7 @@ async def trace_sleep_async(
 
 
 __all__ = [
+    "capture_screenshot_mode",
     "TraceSpan",
     "clear_trace_data",
     "create_trace_id",

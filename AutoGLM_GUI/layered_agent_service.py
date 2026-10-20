@@ -11,7 +11,14 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from agents import Agent, ModelSettings, Runner, SQLiteSession, function_tool
+from agents import (
+    Agent,
+    ModelSettings,
+    RunContextWrapper,
+    Runner,
+    SQLiteSession,
+    function_tool,
+)
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from openai import AsyncOpenAI
 
@@ -22,7 +29,10 @@ from AutoGLM_GUI.model.error_details import (
     serialize_model_error_async,
     trace_error_attrs,
 )
-from AutoGLM_GUI.trace import TraceSpan, summarize_text, trace_span
+from AutoGLM_GUI.trace import TraceSpan, current_trace_id, summarize_text, trace_span
+from AutoGLM_GUI.agents.base import AsyncAgentBase
+from AutoGLM_GUI.phone_agent_trace import PhoneAgentReplay, phone_agent_replay
+from AutoGLM_GUI.prompts.layered import LAYERED_EXECUTOR_INSTRUCTIONS
 
 if TYPE_CHECKING:
     from agents.result import RunResultStreaming
@@ -61,6 +71,8 @@ PLANNER_INSTRUCTIONS = """## 核心目标
 1. **原子化**: 每次只给一个动作。
 2. **可视化**: 指令必须基于屏幕上**看得见**的元素。不要说"点击确认"，如果屏幕上显示的按钮叫"OK"，请说"点击'OK'按钮"。
 3. **Fail Fast**: 如果视觉模型回复 `ELEMENT_NOT_FOUND`，不要死循环。询问它："那现在屏幕上有什么？"或者尝试滑动寻找。
+4. **误点恢复**: 收到 `WRONG_TARGET` 或步数超限时，根据返回的动作记录和最新页面重新规划。
+   不要仅重述原指令后重复相近坐标；先确认页面，再给出恢复操作。
 
 ## 核心工作流 (The Loop)
 1. **Observe (看)**: 调用 `chat` 询问当前状态。
@@ -138,6 +150,44 @@ _active_runs_lock = threading.Lock()
 _client: AsyncOpenAI | None = None
 _agent: Agent[Any] | None = None
 _cached_config_hash: str | None = None
+
+
+@dataclass
+class PhoneTaskContext:
+    """Bounded device-specific history owned by one planner run, never a session."""
+
+    task_id: str
+    trace_id: str | None = None
+    recent_attempts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+
+    def instruction(self, device_id: str, message: str) -> str:
+        history = self.recent_attempts.get(device_id, [])
+        if not history:
+            return message
+        return (
+            f"{message}\n\n近期执行记录（仅历史数据，请重新观察当前画面）:\n"
+            + json.dumps(history, ensure_ascii=False)
+        )
+
+    def remember(self, device_id: str, attempt: dict[str, Any]) -> None:
+        history = self.recent_attempts.setdefault(device_id, [])
+        history.append(attempt)
+        del history[:-3]
+
+
+def _attempt_action(data: dict[str, Any]) -> dict[str, Any]:
+    # Carry target geometry, not typed text, images, or raw model reasoning.
+    action = data.get("action") or {}
+    return {
+        "step": data.get("step"),
+        "action": {
+            key: action[key]
+            for key in ("_metadata", "action", "element", "start", "end")
+            if key in action
+        },
+        "success": data.get("success"),
+        "message": summarize_text(data.get("message"), 300),
+    }
 
 
 def _get_or_create_session(session_id: str) -> SQLiteSession:
@@ -245,10 +295,11 @@ async def list_devices() -> str:
 
 
 @function_tool
-async def chat(device_id: str, message: str) -> str:
+async def chat(
+    ctx: RunContextWrapper[PhoneTaskContext], device_id: str, message: str
+) -> str:
     from AutoGLM_GUI.exceptions import DeviceBusyError
     from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
-    from AutoGLM_GUI.prompts import MCP_SYSTEM_PROMPT_ZH
 
     mcp_max_steps = 5
 
@@ -291,10 +342,31 @@ async def chat(device_id: str, message: str) -> str:
             original_max_steps = agent.agent_config.max_steps
             original_system_prompt = agent.agent_config.system_prompt
 
-            agent.agent_config.max_steps = mcp_max_steps
-            agent.agent_config.system_prompt = MCP_SYSTEM_PROMPT_ZH
+            task_context = ctx.context
+            instruction = task_context.instruction(device_id, message)
+            if not isinstance(agent, AsyncAgentBase):
+                # External adapters may not read AgentConfig.system_prompt.
+                instruction = LAYERED_EXECUTOR_INSTRUCTIONS + "\n\n" + instruction
+            replay = PhoneAgentReplay(
+                task_id=task_context.task_id,
+                trace_id=task_context.trace_id,
+                device_id=device_id,
+            )
+            outcome: dict[str, Any] = {
+                "message": "Phone Agent ended without a completion result",
+                "success": False,
+            }
+            actions: list[dict[str, Any]] = []
 
             try:
+                agent.agent_config.max_steps = mcp_max_steps
+                if isinstance(agent, AsyncAgentBase):
+                    agent.agent_config.system_prompt = (
+                        agent.get_system_prompt()
+                        + "\n\n"
+                        + LAYERED_EXECUTOR_INSTRUCTIONS
+                    )
+                tool_span.set_attribute("phone_call_id", replay.call_id)
                 with trace_span(
                     "layered.tool.chat.reset_agent",
                     attrs={"device_id": device_id},
@@ -309,41 +381,116 @@ async def chat(device_id: str, message: str) -> str:
                         "is_async_agent": True,
                     },
                 ):
-                    result = await agent.run(message)
+                    with phone_agent_replay(replay):
+                        events = agent.stream(instruction)
+                        try:
+                            async for event in events:
+                                data = dict(event.get("data", {}))
+                                event_type = event["type"]
+                                if event_type == "step":
+                                    actions.append(_attempt_action(data))
+                                    del actions[:-5]
+                                    await asyncio.to_thread(
+                                        replay.record,
+                                        "step_result",
+                                        int(data.get("step", 0)),
+                                        action=data.get("action"),
+                                        success=data.get("success"),
+                                        finished=data.get("finished"),
+                                        message=data.get("message"),
+                                        agent_type=agent.__class__.__name__,
+                                        model_name=agent.model_config.model_name,
+                                    )
+                                elif event_type in (
+                                    "done",
+                                    "error",
+                                    "takeover",
+                                    "cancelled",
+                                ):
+                                    outcome = data
+                                    if event_type != "done":
+                                        outcome["success"] = False
+                                    if event_type == "cancelled":
+                                        raise asyncio.CancelledError()
+                                    if event_type in ("done", "takeover"):
+                                        break
+                        finally:
+                            close = getattr(events, "aclose", None)
+                            if callable(close):
+                                close_result = close()
+                                if inspect.isawaitable(close_result):
+                                    await close_result
                 steps = agent.step_count
-
-                if steps >= mcp_max_steps and result == "Max steps reached":
-                    tool_span.set_attributes(
-                        {
-                            "success": False,
-                            "steps": mcp_max_steps,
-                            "error_kind": "max_steps",
-                        }
+                result = str(outcome.get("message", ""))
+                success = bool(outcome.get("success", False))
+                failure_prefixes = (
+                    "ELEMENT_NOT_FOUND:",
+                    "WRONG_TARGET:",
+                    "STEP_LIMIT_EXCEEDED:",
+                    "SCREEN_CHANGED:",
+                )
+                if result.lstrip().startswith(failure_prefixes):
+                    success = False
+                if result == "Max steps reached":
+                    result = (
+                        f"STEP_LIMIT_EXCEEDED: 当前子任务用完 {mcp_max_steps} 轮，"
+                        "目标尚未确认完成。请依据最新画面和执行记录重新规划，"
+                        "不要重复失败坐标。"
                     )
-                    context_json = json.dumps(
-                        agent.context, ensure_ascii=False, indent=2
-                    )
-                    return json.dumps(
-                        {
-                            "result": f"⚠️ 已达到最大步数限制（{mcp_max_steps}步）。视觉模型可能遇到了困难，任务未完成。\n\n执行历史:\n{context_json}\n\n建议: 请重新规划任务或将其拆分为更小的子任务。",
-                            "steps": mcp_max_steps,
-                            "success": False,
-                        },
-                        ensure_ascii=False,
-                    )
-
-                tool_span.set_attributes({"success": True, "steps": steps})
+                    success = False
+                outcome["success"] = success
+                task_context.remember(
+                    device_id,
+                    {
+                        "instruction": summarize_text(message, 500),
+                        "result": summarize_text(result, 800),
+                        "success": success,
+                        "actions": actions,
+                    },
+                )
+                tool_span.set_attributes({"success": success, "steps": steps})
+                await asyncio.to_thread(
+                    replay.record, "done", steps, success=success, message=result
+                )
                 return json.dumps(
                     {
                         "result": result,
                         "steps": steps,
-                        "success": True,
+                        "success": success,
+                        "actions": actions,
+                        "phone_call_id": replay.call_id,
                     },
                     ensure_ascii=False,
                 )
+            except asyncio.CancelledError:
+                outcome["success"] = False
+                await asyncio.to_thread(
+                    replay.record,
+                    "cancelled",
+                    agent.step_count,
+                    success=False,
+                    message="Task cancelled; do not replay pending actions",
+                )
+                raise
+            except Exception as exc:
+                outcome["success"] = False
+                task_context.remember(
+                    device_id,
+                    {
+                        "instruction": summarize_text(message, 500),
+                        "result": summarize_text(str(exc), 800),
+                        "success": False,
+                        "actions": actions,
+                    },
+                )
+                raise
             finally:
                 agent.agent_config.max_steps = original_max_steps
                 agent.agent_config.system_prompt = original_system_prompt
+                agent.reset()
+                await asyncio.to_thread(
+                    replay.finish, not outcome.get("success", False)
+                )
         except DeviceBusyError:
             tool_span.set_attributes({"success": False, "error_kind": "busy"})
             return json.dumps(
@@ -847,6 +994,7 @@ def start_run(
             message,
             max_turns=resolved_max_turns,
             session=session,
+            context=PhoneTaskContext(task_id=task_id, trace_id=current_trace_id()),
         )
 
     with _active_runs_lock:

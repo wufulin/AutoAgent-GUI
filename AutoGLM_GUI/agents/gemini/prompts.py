@@ -27,6 +27,8 @@ All coordinates use a **0-1000 relative scale**:
 
 When you need to tap, swipe, or interact with a UI element, estimate its position \
 in this 0-1000 coordinate system based on the screenshot.
+Do not return raw image pixels: x = pixel_x / image_width * 1000 and \
+y = pixel_y / image_height * 1000. Normalize the two axes independently.
 
 # Guidelines
 - Call exactly ONE tool per step. Do not call multiple tools at once.
@@ -62,6 +64,8 @@ _SYSTEM_PROMPT_TEMPLATE_ZH = """\
 - (500, 500) = 屏幕中心
 
 当你需要点击、滑动或与 UI 元素交互时，根据截图估算元素在 0-1000 坐标系中的位置。
+不要直接输出截图像素：x = 像素横坐标 / 图像宽度 * 1000，
+y = 像素纵坐标 / 图像高度 * 1000。横纵轴分别归一化。
 
 # 注意事项
 - 每步只调用一个工具，不要同时调用多个。
