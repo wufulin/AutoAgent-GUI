@@ -481,7 +481,9 @@ def test_control_heartbeat_detects_kickout_and_stops_input(device):
     assert all(isinstance(p, str) for p in device.transport.socket.sent)
 
 
-def test_video_decodes_real_h264(monkeypatch, tmp_path):
+@pytest.mark.parametrize("cold_hid", [False, True])
+@pytest.mark.parametrize("output", ["usb", "usb_hybrid"])
+def test_video_decodes_real_h264(monkeypatch, tmp_path, cold_hid, output):
     """Cold start requires the stream session before opening H.264 media."""
     import av
     from PIL import Image
@@ -494,8 +496,31 @@ def test_video_decodes_real_h264(monkeypatch, tmp_path):
     encoder.options = {"preset": "ultrafast", "tune": "zerolatency"}
     frame = av.VideoFrame.from_image(Image.new("RGB", (64, 128), "red"))
     packets = encoder.encode(frame) + encoder.encode(None)
-    transport = FakeTransport()
+    transport = FakeTransport(output)
     device = RMQ1Device(transport, tmp_path)
+    if cold_hid:
+        original_result = transport.result
+
+        def result(path):
+            value = original_result(path)
+            if path == "/api/hid":
+                value["mouse"]["online"] = False
+            return value
+
+        transport.result = result
+        ready = json.loads(transport.socket.recv())
+        offline = json.loads(json.dumps(ready))
+        offline["event"]["mouse"]["online"] = False
+        updates = iter(
+            [
+                json.dumps(offline),
+                json.dumps({"event_type": "hid", "event": {"mouse": {"online": True}}}),
+            ]
+        )
+        original_recv = transport.socket.recv
+        transport.socket.recv = lambda **kwargs: next(updates, None) or original_recv(
+            **kwargs
+        )
     video = FakeSocket()
     opened = []
 
@@ -506,6 +531,7 @@ def test_video_decodes_real_h264(monkeypatch, tmp_path):
         assert opened == ["/api/ws", "/api/media/ws"]
         assert transport.socket.received > 0
         assert not transport.socket.closed
+        assert device._hid_state["mouse"]["online"] is True
         return video
 
     transport.websocket = websocket
@@ -538,6 +564,66 @@ def test_video_decodes_real_h264(monkeypatch, tmp_path):
     assert video.closed and transport.socket.closed
     assert not device._worker.is_alive()
     assert not device._control_worker.is_alive()
+
+
+@pytest.mark.parametrize("failure", ["timeout", "disconnect", "mode_change", "kickout"])
+def test_startup_hid_failure_never_opens_video_or_sends_input(tmp_path, failure):
+    transport = FakeTransport("usb_hybrid")
+    device = RMQ1Device(transport, tmp_path)
+    initial = json.loads(transport.socket.recv())
+    initial["event"]["mouse"]["online"] = False
+    followup = {
+        "disconnect": {"event_type": "hid", "event": {"connected": False}},
+        "mode_change": {
+            "event_type": "hid",
+            "event": {"mouse": {"outputs": {"active": "usb"}, "online": True}},
+        },
+        "kickout": {"event_type": "kickout", "event": {}},
+    }
+    messages = iter([initial, followup.get(failure)])
+
+    def recv(**kwargs):
+        value = next(messages, None)
+        if value is None:
+            raise TimeoutError
+        return json.dumps(value)
+
+    transport.socket.recv = recv
+    opened = []
+
+    def websocket(path):
+        opened.append(path)
+        return transport.socket
+
+    transport.websocket = websocket
+    device._marker.write_text("existing-unknown-action")
+    try:
+        with pytest.raises(RMQ1Error):
+            device.start()
+        assert opened == ["/api/ws"]
+        assert transport.socket.sent == []
+        assert not device.online
+        assert device._marker.read_text() == "existing-unknown-action"
+    finally:
+        device.close()
+    assert transport.socket.closed
+
+
+def test_online_hid_is_still_required_for_every_gesture(device):
+    args = gesture_args(device)
+    original = device.transport.result
+
+    def result(path):
+        value = original(path)
+        if path == "/api/hid":
+            value["mouse"]["online"] = False
+        return value
+
+    device.transport.result = result
+    with pytest.raises(RMQ1Error, match="HID 未就绪"):
+        device.gesture(**args)
+    assert device.transport.socket.sent == []
+    assert not device.recovery_required
 
 
 def test_api_validates_coordinates_and_redacts_unexpected_error(device, monkeypatch):

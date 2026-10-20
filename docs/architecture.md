@@ -28,6 +28,10 @@ HTTP Remote 并存。`DeviceManager` 只在登录、手机配置、HID 和首张
 `DeviceProtocol` 的 AI 初始化和旧 ADB 控制、scrcpy 入口显式拒绝 RMQ1。
 
 浏览器通过 `/api/rmq1/{probe,connect,disconnect,observe,gesture,recover}` 与后端交互。
+连接握手先校验 USB 与鼠标配置，再建立持久控制通道；首次 HID 状态可短暂离线，
+最多等待 5 秒确认在线后才启动视频和注册设备。此等待只用于启动，操作与心跳仍严格
+校验在线、模式及连接状态。控制会话初始化会由固件释放 HID，不发送试探点击或移动，
+也不清除历史未确认标记。
 `observe` 附带同一帧几何对应的 `content_rect`（归一化采集画面坐标，包含
 `x/y/width/height`）。前端默认裁去黑边，缩放完整原图后在此区域内显示；手动
 操作仍提交原始采集画面的归一化坐标，后端继续校验帧、会话、几何与黑边。
