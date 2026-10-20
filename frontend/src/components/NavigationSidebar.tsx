@@ -15,7 +15,7 @@ import {
   TooltipContent,
 } from '@/components/ui/tooltip';
 import { useTranslation } from '../lib/i18n-context';
-import logoImage from '@/assets/logo.png';
+import logoImage from '@/assets/automobile-logo.png';
 import { AppPreferencesMenu } from './AppPreferencesMenu';
 
 interface NavigationItem {
@@ -84,8 +84,8 @@ export function NavigationSidebar({ className }: NavigationSidebarProps) {
               <Link to="/chat" className="block">
                 <img
                   src={logoImage}
-                  alt="AutoGLM Logo"
-                  className="w-10 h-10 object-contain cursor-pointer hover:opacity-80 transition-opacity"
+                  alt="AutoMobile Logo"
+                  className="w-12 h-12 object-contain cursor-pointer hover:opacity-80 transition-opacity"
                 />
               </Link>
             </TooltipTrigger>

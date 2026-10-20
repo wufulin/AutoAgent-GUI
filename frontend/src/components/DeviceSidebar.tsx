@@ -12,6 +12,8 @@ import {
   CheckCircle,
   XCircle,
   FolderCog,
+  RefreshCw,
+  Usb,
 } from 'lucide-react';
 import { GroupedDeviceList } from './GroupedDeviceList';
 import { Button } from '@/components/ui/button';
@@ -687,7 +689,7 @@ export function DeviceSidebar({
           <div className="flex items-center gap-2">
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                AutoGLM
+                AutoMobile
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 {devices.length}{' '}
@@ -698,15 +700,29 @@ export function DeviceSidebar({
             </div>
           </div>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggleCollapse}
-            className="h-8 w-8 rounded-full text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
-            title="Collapse sidebar"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            {onRefreshDevices && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onRefreshDevices}
+                className="h-8 w-8 rounded-full text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+                title={t.deviceSidebar.refreshDevices}
+                aria-label={t.deviceSidebar.refreshDevices}
+              >
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleCollapse}
+              className="h-8 w-8 rounded-full text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+              title="Collapse sidebar"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
         <Separator className="mx-4" />
@@ -722,7 +738,7 @@ export function DeviceSidebar({
                 {t.deviceSidebar.noDevicesConnected}
               </p>
               <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                {t.deviceSidebar.clickToRefresh}
+                {t.deviceSidebar.usbConnectionHint}
               </p>
             </div>
           ) : (
@@ -781,6 +797,16 @@ export function DeviceSidebar({
                 {t.deviceSidebar.manualConnectDescription}
               </DialogDescription>
             </DialogHeader>
+
+            <div className="flex items-start gap-3 rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-900">
+              <Usb className="mt-0.5 h-5 w-5 shrink-0 text-[#1d9bf0]" />
+              <div>
+                <p className="font-medium">{t.deviceSidebar.usbConnection}</p>
+                <p className="mt-1 text-slate-500 dark:text-slate-400">
+                  {t.deviceSidebar.usbConnectionHint}
+                </p>
+              </div>
+            </div>
 
             <Tabs
               value={activeTab}
