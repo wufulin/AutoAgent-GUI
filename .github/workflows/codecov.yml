@@ -3,9 +3,29 @@ name: Codecov
 on:
   pull_request:
     branches: [main, dev]
+    paths:
+      - 'AutoGLM_GUI/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.coveragerc'
+      - 'pytest.ini'
+      - '.github/workflows/codecov.yml'
+      - '.github/actions/setup-python/**'
   push:
     branches: [main, dev]
+    paths:
+      - 'AutoGLM_GUI/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.coveragerc'
+      - 'pytest.ini'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   unit-coverage:

@@ -13,6 +13,10 @@ on:
       - '.github/workflows/release-gate.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release-gate:
     name: Contract + Critical Integration Gate

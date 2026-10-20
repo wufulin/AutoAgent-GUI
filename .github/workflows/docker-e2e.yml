@@ -17,6 +17,10 @@ on:
       - 'tests/e2e/**'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   docker-e2e:
     name: Docker E2E with Remote Device Mock

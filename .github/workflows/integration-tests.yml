@@ -16,6 +16,10 @@ on:
       - 'AutoGLM_GUI/**'
   workflow_dispatch:  # Allow manual trigger
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Run Python Tests
@@ -23,8 +27,12 @@ jobs:
     timeout-minutes: 10
 
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12', '3.13', '3.14']
+        # PRs test min + max supported versions only; the full 3.11-3.14 matrix
+        # runs on push to main. e2e is excluded on PRs since it is already
+        # covered by the Codecov, Docker E2E, and Frontend E2E workflows.
+        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.11", "3.14"]' || '["3.11", "3.12", "3.13", "3.14"]') }}
 
     steps:
       - name: Checkout code
@@ -37,8 +45,14 @@ jobs:
           frozen: "true"
 
       - name: Run Python tests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          uv run pytest -v
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            uv run pytest -v -m "not e2e"
+          else
+            uv run pytest -v
+          fi
 
       - name: Generate test summary
         if: always()

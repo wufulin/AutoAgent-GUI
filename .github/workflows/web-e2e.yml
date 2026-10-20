@@ -1,10 +1,25 @@
 name: Web E2E Tests
 
+# This Windows Playwright run duplicates the "Frontend E2E Coverage" job (same
+# suite on Linux), so it no longer runs on every PR. It runs on push to main and
+# on demand; PRs are covered by coverage-e2e-frontend.yml.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+  push:
     branches: [main, master]
+    paths:
+      - 'frontend/**'
+      - 'AutoGLM_GUI/**'
+      - 'scripts/start_e2e_services.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/web-e2e.yml'
+      - '.github/actions/setup-node/**'
+      - '.github/actions/setup-python/**'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

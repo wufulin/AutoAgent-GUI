@@ -3,9 +3,31 @@ name: Frontend E2E Coverage
 on:
   pull_request:
     branches: [main, master]
+    paths:
+      - 'frontend/**'
+      - 'AutoGLM_GUI/**'
+      - 'tests/e2e/**'
+      - 'scripts/start_e2e_services.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.coveragerc'
+      - '.github/workflows/coverage-e2e-frontend.yml'
+      - '.github/actions/setup-node/**'
+      - '.github/actions/setup-python/**'
   push:
     branches: [main, master]
+    paths:
+      - 'frontend/**'
+      - 'AutoGLM_GUI/**'
+      - 'tests/e2e/**'
+      - 'scripts/start_e2e_services.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
