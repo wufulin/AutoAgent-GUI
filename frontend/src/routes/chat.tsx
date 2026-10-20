@@ -54,6 +54,7 @@ const VISION_PRESETS = [
       base_url: 'https://open.bigmodel.cn/api/paas/v4',
       model_name: 'autoglm-phone',
     },
+    agentType: 'glm-async',
     apiKeyUrl: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys',
   },
   {
@@ -62,6 +63,7 @@ const VISION_PRESETS = [
       base_url: 'https://api-inference.modelscope.cn/v1',
       model_name: 'ZhipuAI/AutoGLM-Phone-9B',
     },
+    agentType: 'glm-async',
     apiKeyUrl: 'https://www.modelscope.cn/my/myaccesstoken',
   },
   {
