@@ -78,6 +78,9 @@ export const zh = {
       '高级设置：修改后会影响后续任务默认行为，并可能增加执行时长与模型调用成本。',
     layeredMaxTurns: '分层代理最大轮次',
     layeredMaxTurnsHint: '分层代理模式的最大轮次（最小值为1）',
+    temperature: '采样温度',
+    temperatureHint:
+      '采样温度（0-2）。GLM / AutoGLM 系列建议 0；Kimi K3 系列必须为 1，否则接口报错。',
     agentGlmDesc: '基于 GLM 模型优化，成熟稳定，适合大多数任务',
     agentMaiDesc: '阿里通义团队开发，支持多张历史截图上下文',
     agentGeminiDesc:

@@ -278,6 +278,9 @@ class ConfigResponse(BaseModel):
     api_key: str  # 返回实际值（明文）
     source: str  # "CLI arguments" | "environment variables" | "config file (...)" | "default"
 
+    # 采样温度（部分模型只接受特定值）
+    temperature: float = 0.0
+
     # Agent 类型配置
     agent_type: str = "glm-async"  # Agent type (e.g., "glm-async", "mai")
     agent_config_params: dict[str, Any] | None = None  # Agent-specific configuration
@@ -302,6 +305,9 @@ class ConfigSaveRequest(BaseModel):
     base_url: str
     model_name: str = "autoglm-phone-9b"
     api_key: str | None = None
+
+    # 采样温度（None 表示不修改，保留配置文件中已有的值）
+    temperature: float | None = None
 
     # Agent 类型配置
     agent_type: str = "glm-async"  # Agent type to use (e.g., "glm-async", "mai")
@@ -357,6 +363,16 @@ class ConfigSaveRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError("model_name cannot be empty")
         return v.strip()
+
+    @field_validator("temperature")
+    @classmethod
+    def validate_temperature(cls, v: float | None) -> float | None:
+        """验证 temperature 范围."""
+        if v is None:
+            return v
+        if not 0.0 <= v <= 2.0:
+            raise ValueError("temperature must be between 0.0 and 2.0")
+        return v
 
     @field_validator("decision_base_url")
     @classmethod
