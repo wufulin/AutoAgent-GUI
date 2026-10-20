@@ -25,7 +25,8 @@ from AutoGLM_GUI.devices.rmq1_transport import (
 
 
 class FakeSocket:
-    def __init__(self):
+    def __init__(self, output="usb"):
+        self.output = output
         self.sent = []
         self.closed = False
         self.fail = False
@@ -50,7 +51,7 @@ class FakeSocket:
                         "mouse": {
                             "online": True,
                             "absolute": True,
-                            "outputs": {"active": "usb"},
+                            "outputs": {"active": self.output},
                         },
                     },
                 }
@@ -65,8 +66,9 @@ class FakeTransport:
     host = "192.168.1.20"
     fingerprint = "a" * 64
 
-    def __init__(self):
-        self.socket = FakeSocket()
+    def __init__(self, output="usb"):
+        self.socket = FakeSocket(output)
+        self.output = output
         self.hid_ok = True
         self.config = {
             "remote_device_settings": {
@@ -84,7 +86,7 @@ class FakeTransport:
             "mouse": {
                 "online": True,
                 "absolute": True,
-                "outputs": {"active": "usb"},
+                "outputs": {"active": self.output},
             },
         }
 
@@ -95,12 +97,17 @@ class FakeTransport:
         pass
 
 
-@pytest.fixture
-def device(tmp_path):
-    device = RMQ1Device(FakeTransport(), tmp_path)
+def make_device(tmp_path, output="usb"):
+    device = RMQ1Device(FakeTransport(output), tmp_path)
+    device.check_hid()
     device._latest = (time.monotonic(), "image", 1920, 1080)
     device._control = device.transport.socket
     return device
+
+
+@pytest.fixture
+def device(tmp_path):
+    return make_device(tmp_path)
 
 
 def gesture_args(device):
@@ -186,6 +193,88 @@ def test_tap_deduplicates_original_action_and_releases(device):
     assert not device.transport.socket.closed
     with pytest.raises(RMQ1Error, match="ID"):
         device.gesture(**{**args, "end": (0.5, 0.6)})
+
+
+@pytest.mark.parametrize("end", [None, (0.5, 0.7)])
+def test_hybrid_gesture_positions_before_press_and_releases(tmp_path, monkeypatch, end):
+    device = make_device(tmp_path, "usb_hybrid")
+    events = []
+    send = device.transport.socket.send
+
+    def record_send(value):
+        events.append(value)
+        send(value)
+
+    device.transport.socket.send = record_send
+    monkeypatch.setattr(time, "sleep", lambda seconds: events.append(("wait", seconds)))
+    args = {**gesture_args(device), "end": end}
+    result = device.gesture(**args)
+    assert result["success"] and not result["recovery_required"]
+    move = events.index(struct.pack(">Bhh", 3, 0, 0))
+    down = events.index(b"\x02\x01left")
+    up = events.index(b"\x02\x00left")
+    assert move < events.index(("wait", 0.08)) < down < up
+    assert json.dumps({"event_type": "ping", "event": {}}) in events[move + 1 : down]
+    count = len(events)
+    assert device.gesture(**args) == result
+    assert len(events) == count
+    assert not device.recovery_required
+
+
+@pytest.mark.parametrize("output", ["usb_rel", "usb_touch", "", "future"])
+def test_unsupported_mouse_output_is_rejected(tmp_path, output):
+    transport = FakeTransport(output)
+    with pytest.raises(RMQ1Error, match="鼠标"):
+        RMQ1Device(transport, tmp_path).start()
+    assert transport.socket.sent == []
+
+
+@pytest.mark.parametrize(
+    "initial,changed", [("usb", "usb_hybrid"), ("usb_hybrid", "usb")]
+)
+def test_changed_mouse_mode_invalidates_session(tmp_path, initial, changed):
+    device = make_device(tmp_path, initial)
+    args = gesture_args(device)
+    device.transport.output = changed
+    with pytest.raises(RMQ1Error, match="模式已变化"):
+        device.gesture(**args)
+    assert device.transport.socket.sent == []
+    device.transport.output = initial
+    with pytest.raises(RMQ1Error, match="失效"):
+        device.gesture(**args)
+
+
+@pytest.mark.parametrize(
+    "change", ["stale", "geometry", "resolution", "hid", "ws_mode"]
+)
+def test_hybrid_state_change_during_settle_never_presses(tmp_path, monkeypatch, change):
+    device = make_device(tmp_path, "usb_hybrid")
+    args = gesture_args(device)
+
+    def change_state(seconds):
+        assert seconds == 0.08
+        if change == "stale":
+            device._latest = (time.monotonic() - 4, "image", 1920, 1080)
+        elif change == "geometry":
+            device.transport.config["mobile_orientation"] = "landscape"
+        elif change == "resolution":
+            device._latest = (time.monotonic(), "image", 1080, 1920)
+        elif change == "hid":
+            device.transport.hid_ok = False
+        else:
+            # HTTP remains unchanged; the retained control channel reports the
+            # new mode before DOWN, including a supported-to-supported change.
+            device.transport.socket.output = "usb"
+            device.transport.socket.received = 0
+
+    monkeypatch.setattr(time, "sleep", change_state)
+    result = device.gesture(**args)
+    assert not result["success"] and result["recovery_required"]
+    assert b"\x02\x01left" not in device.transport.socket.sent
+    assert device.recovery_required
+    count = len(device.transport.socket.sent)
+    assert device.gesture(**args) == result
+    assert len(device.transport.socket.sent) == count
 
 
 @pytest.mark.parametrize("invalid", ["stale", "rotation", "session", "hid", "blackbar"])
