@@ -409,3 +409,206 @@ async def test_old_finalizer_cannot_cancel_a_new_startup_token(monkeypatch):
     monkeypatch.setitem(server._startup_tokens, "replacement", token)
     await server._stop_stream_for_sid("replacement", expected=object())
     assert server._startup_tokens["replacement"] is token
+
+
+@pytest.mark.anyio
+async def test_video_pipeline_is_bounded_and_keeps_configuration_barrier(
+    manager, monkeypatch
+):
+    import AutoGLM_GUI.socketio_server as server
+    from AutoGLM_GUI.scrcpy_protocol import ScrcpyMediaStreamPacket
+    from unittest.mock import Mock
+
+    reads = []
+    acknowledgements = []
+    payloads = []
+    full = asyncio.Event()
+    config_read = asyncio.Event()
+    next_geometry = asyncio.Event()
+
+    class Stream:
+        device_id = "phone"
+        stop = Mock()
+
+        async def send_control(self, data):
+            pass
+
+        async def iter_packets(self):
+            for i in range(4):
+                reads.append(i)
+                yield ScrcpyMediaStreamPacket(type="data", data=b"frame")
+            config_read.set()
+            yield ScrcpyMediaStreamPacket(type="configuration", data=b"config")
+            yield ScrcpyMediaStreamPacket(type="data", data=b"new-frame")
+
+    stream = Stream()
+    session = ControlSession("phone", stream)
+    server._control_sessions["window-test"] = session
+    server._socket_streamers["window-test"] = stream
+
+    async def emit(event, payload, *, to, callback=None):
+        assert event == "video-data"
+        payloads.append(payload)
+        acknowledgements.append(callback)
+        if len(acknowledgements) == 4:
+            full.set()
+        if payload["data"] == b"new-frame":
+            next_geometry.set()
+
+    async def call(event, payload, **kwargs):
+        assert payload["type"] == "configuration"
+        assert all(frame["epoch"] == 0 for frame in payloads)
+        payloads.append(payload)
+
+    monkeypatch.setattr(server.sio, "emit", emit)
+    monkeypatch.setattr(server.sio, "call", call)
+    task = asyncio.create_task(server._stream_packets("window-test", stream, 4))
+    await asyncio.wait_for(full.wait(), 1)
+    assert reads == [0, 1, 2, 3]
+    assert not config_read.is_set()
+    acknowledgements[0]()
+    await asyncio.wait_for(config_read.wait(), 1)
+    assert session.epoch == 1
+    with pytest.raises(ValueError, match="Video geometry changed"):
+        await session.execute(cmd(session, 1, "down").model_copy(update={"epoch": 0}))
+    assert len(payloads) == 4
+    for acknowledge in acknowledgements[1:]:
+        acknowledge()
+    await asyncio.wait_for(next_geometry.wait(), 1)
+    assert [packet["epoch"] for packet in payloads] == [0, 0, 0, 0, 1, 1]
+    acknowledgements[-1]()
+    await asyncio.wait_for(task, 1)
+    stream.stop.assert_called_once()
+    assert "window-test" not in server._control_sessions
+
+
+@pytest.mark.anyio
+async def test_video_pipeline_cancellation_releases_session(manager, monkeypatch):
+    import AutoGLM_GUI.socketio_server as server
+    from AutoGLM_GUI.scrcpy_protocol import ScrcpyMediaStreamPacket
+    from unittest.mock import Mock
+
+    full = asyncio.Event()
+    callbacks = []
+
+    class Stream:
+        device_id = "phone"
+        stop = Mock()
+
+        async def send_control(self, data):
+            pass
+
+        async def iter_packets(self):
+            for _ in range(5):
+                yield ScrcpyMediaStreamPacket(type="data", data=b"frame")
+
+    stream = Stream()
+    server._socket_streamers["cancel-window"] = stream
+    server._control_sessions["cancel-window"] = ControlSession("phone", stream)
+
+    async def emit(event, payload, *, to, callback):
+        callbacks.append(callback)
+        if len(callbacks) == 4:
+            full.set()
+
+    monkeypatch.setattr(server.sio, "emit", emit)
+    task = asyncio.create_task(server._stream_packets("cancel-window", stream, 4))
+    await asyncio.wait_for(full.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    for callback in callbacks:
+        callback()  # Late render ACKs after cancellation must be harmless.
+    stream.stop.assert_called_once()
+    assert "cancel-window" not in server._control_sessions
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("requested", "codec", "expected"),
+    [(999, 0x68323634, 4), (None, 0x68323634, 1), (4, 0x68323635, 1)],
+)
+async def test_video_window_negotiation_preserves_legacy_clients(
+    manager, monkeypatch, requested, codec, expected
+):
+    import AutoGLM_GUI.socketio_server as server
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    pumped = asyncio.Event()
+    windows = []
+
+    class Stream:
+        stop = Mock()
+
+        def __init__(self, **kwargs):
+            self.device_id = kwargs["device_id"]
+
+        async def start(self):
+            pass
+
+        async def read_video_metadata(self):
+            return SimpleNamespace(
+                device_name="phone", width=600, height=1200, codec=codec
+            )
+
+    async def pump(sid, stream, video_window=1):
+        windows.append(video_window)
+        pumped.set()
+
+    monkeypatch.setattr(server, "ScrcpyStreamer", Stream)
+    monkeypatch.setattr(server, "_stream_packets", pump)
+    monkeypatch.setattr(server.sio, "emit", AsyncMock())
+    await server.connect("negotiated", {})
+    await server.connect_device(
+        "negotiated", {"device_id": "phone", "control": True, "videoWindow": requested}
+    )
+    await asyncio.wait_for(pumped.wait(), 1)
+    assert windows == [expected]
+    await server.disconnect("negotiated")
+
+
+@pytest.mark.anyio
+async def test_video_window_missing_render_ack_stops_the_session(manager, monkeypatch):
+    import AutoGLM_GUI.socketio_server as server
+    from AutoGLM_GUI.scrcpy_protocol import ScrcpyMediaStreamPacket
+    from unittest.mock import Mock
+
+    callbacks = []
+    errors = []
+    original_wait_for = asyncio.wait_for
+
+    async def bounded_wait(awaitable, timeout):
+        if type(awaitable) is asyncio.Future:
+            timeout = min(timeout, 0.01)
+        return await original_wait_for(awaitable, timeout)
+
+    class Stream:
+        device_id = "phone"
+        stop = Mock()
+
+        async def send_control(self, data):
+            pass
+
+        async def iter_packets(self):
+            for _ in range(4):
+                yield ScrcpyMediaStreamPacket(type="data", data=b"frame")
+
+    async def emit(event, payload, *, to, callback=None):
+        if event == "video-data":
+            callbacks.append(callback)
+        elif event == "error":
+            errors.append(payload)
+
+    stream = Stream()
+    server._socket_streamers["timeout-window"] = stream
+    server._control_sessions["timeout-window"] = ControlSession("phone", stream)
+    monkeypatch.setattr(server.sio, "emit", emit)
+    monkeypatch.setattr(server.asyncio, "wait_for", bounded_wait)
+    await server._stream_packets("timeout-window", stream, 4)
+    assert len(callbacks) == 4
+    assert len(errors) == 1
+    assert "timeout-window" not in server._control_sessions
+    stream.stop.assert_called_once()
+    for callback in callbacks:
+        callback()

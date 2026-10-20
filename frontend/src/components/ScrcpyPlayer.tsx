@@ -9,6 +9,7 @@ import {
   WebGLVideoFrameRenderer,
 } from '@yume-chan/scrcpy-decoder-webcodecs';
 import { detectWebCodecsUnavailabilityReason } from '../lib/webcodecs-utils';
+import { ScrcpyH264Decoder } from '../lib/scrcpy-h264-decoder';
 import {
   FrameGeometry,
   mapVideoPoint,
@@ -91,11 +92,12 @@ export function ScrcpyPlayer({
   useEffect(() => {
     if (!isVisible) return;
     let disposed = false;
-    let decoder: WebCodecsVideoDecoder | null = null;
+    let decoder: WebCodecsVideoDecoder | ScrcpyH264Decoder | null = null;
     let writer: WritableStreamDefaultWriter<VideoPacket> | null = null;
     let initializing: Promise<void> = Promise.resolve();
     let renderedAck: (() => void) | null = null;
     let packetEpoch = 0;
+    let renderGeneration = 0;
     let rendered = 0;
     let ready = false;
     let previousRendered = 0;
@@ -114,6 +116,7 @@ export function ScrcpyPlayer({
     });
 
     const releaseDecoder = () => {
+      renderGeneration++;
       controlRef.current?.dispose();
       controlRef.current = null;
       geometryRef.current = null;
@@ -150,6 +153,7 @@ export function ScrcpyPlayer({
       socket.emit('connect-device', {
         device_id: deviceId,
         control: true,
+        videoWindow: 4,
         ...(PROFILES[quality] || PROFILES.balanced),
       });
     });
@@ -181,45 +185,62 @@ export function ScrcpyPlayer({
             if (latencies.length > 100) latencies.shift();
           }
         );
-        decoder = new WebCodecsVideoDecoder({
-          codec: (metadata.codec ||
-            ScrcpyVideoCodecId.H264) as ScrcpyVideoCodecId,
-          renderer: {
-            setSize: (width, height) => renderer.setSize(width, height),
-            draw: async frame => {
-              await renderer.draw(frame);
-              if (disposed) return;
-              const geometry = {
-                width: frame.displayWidth,
-                height: frame.displayHeight,
-                epoch: packetEpoch,
-              };
-              const old = geometryRef.current;
-              if (
-                old &&
-                (old.epoch !== geometry.epoch ||
-                  old.width !== geometry.width ||
-                  old.height !== geometry.height)
-              ) {
-                pointerRef.current = null;
-                controlRef.current?.cancel(geometry);
-              }
-              geometryRef.current = geometry;
-              rendered++;
-              lastFrameAt = performance.now();
-              setStatus('video');
-              if (!ready) {
-                ready = true;
-                callbacks.current.onStreamReady?.({
-                  close: () => socket.disconnect(),
-                });
-              }
-              renderedAck?.();
-              renderedAck = null;
+        const generation = renderGeneration;
+        const draw = async (frame: VideoFrame, epoch: number) => {
+          if (disposed || generation !== renderGeneration) return;
+          renderer.setSize(frame.displayWidth, frame.displayHeight);
+          await renderer.draw(frame);
+          if (disposed || generation !== renderGeneration) return;
+          const geometry = {
+            width: frame.displayWidth,
+            height: frame.displayHeight,
+            epoch,
+          };
+          const old = geometryRef.current;
+          if (
+            old &&
+            (old.epoch !== geometry.epoch ||
+              old.width !== geometry.width ||
+              old.height !== geometry.height)
+          ) {
+            pointerRef.current = null;
+            controlRef.current?.cancel(geometry);
+          }
+          geometryRef.current = geometry;
+          rendered++;
+          lastFrameAt = performance.now();
+          setStatus('video');
+          if (!ready) {
+            ready = true;
+            callbacks.current.onStreamReady?.({
+              close: () => socket.disconnect(),
+            });
+          }
+        };
+        const codec = (metadata.codec ||
+          ScrcpyVideoCodecId.H264) as ScrcpyVideoCodecId;
+        if (codec === ScrcpyVideoCodecId.H264) {
+          decoder = new ScrcpyH264Decoder(draw, error => {
+            if (generation === renderGeneration) fail(String(error));
+          });
+        } else {
+          // The server keeps non-H.264 codecs on the legacy one-frame window.
+          decoder = new WebCodecsVideoDecoder({
+            codec,
+            renderer: {
+              setSize: (width, height) => renderer.setSize(width, height),
+              draw: async frame => {
+                await draw(frame, packetEpoch);
+                if (generation !== renderGeneration) return;
+                renderedAck?.();
+                renderedAck = null;
+              },
             },
-          },
-        });
-        writer = (decoder.writable as WritableStream<VideoPacket>).getWriter();
+          });
+          writer = (
+            decoder.writable as WritableStream<VideoPacket>
+          ).getWriter();
+        }
         // A user-confirmed recovery may clear a previous session's quarantine.
         if (recoveryRequestedRef.current) {
           const result = await socket
@@ -244,17 +265,27 @@ export function ScrcpyPlayer({
     socket.on('video-data', async (packet: VideoPacket, ack?: () => void) => {
       try {
         await initializing;
-        if (disposed || !writer) return;
+        if (disposed || !decoder) return;
         packetEpoch = packet.epoch;
         if (packet.type === 'configuration') {
           // Stop accepting input until a frame from the new geometry is displayed.
           geometryRef.current = geometryRef.current
             ? { ...geometryRef.current, epoch: -1 }
             : null;
+          if (decoder instanceof ScrcpyH264Decoder) {
+            decoder.write(packet, ack);
+            return;
+          }
+          if (!writer) return;
           await writer.write({ ...packet, data: new Uint8Array(packet.data) });
           ack?.();
           return;
         }
+        if (decoder instanceof ScrcpyH264Decoder) {
+          decoder.write(packet, ack);
+          return;
+        }
+        if (!writer) return;
         renderedAck = ack || null;
         await writer.write({ ...packet, data: new Uint8Array(packet.data) });
       } catch (err) {
