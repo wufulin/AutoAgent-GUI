@@ -29,75 +29,40 @@ class QwenParser:
             ValueError: If parsing fails.
         """
         response = action_str.strip()
-        response = response.strip("<answer>").strip("</answer>")
-
+        if response.startswith("<answer>") and response.endswith("</answer>"):
+            response = response[len("<answer>") : -len("</answer>")].strip()
         try:
-            if response.startswith("do"):
-                return self._parse_do(response)
-            elif response.startswith("info"):
-                return self._parse_info(response)
-            elif response.startswith("finish"):
-                return self._parse_finish(response)
-            else:
-                raise ValueError(f"Unknown action format: {response}")
+            return self._parse_call(response)
         except (SyntaxError, ValueError):
-            response = self._re_parse(response)
-            if response.startswith("do"):
-                return self._parse_do(response)
-            elif response.startswith("info"):
-                return self._parse_info(response)
-            elif response.startswith("finish"):
-                return self._parse_finish(response)
-            raise ValueError(f"Failed to parse action after repair: {response}")
+            # Coordinate-bracket repair is bounded to do() actions. Never repair
+            # a malformed completion request into a successful finish.
+            if response.startswith("do("):
+                repaired = self._re_parse(response)
+                if repaired != response:
+                    return self._parse_call(repaired)
+            raise ValueError("Malformed model action") from None
 
-    def _parse_do(self, response: str) -> dict[str, Any]:
-        try:
-            tree = ast.parse(response, mode="eval")
-            if not isinstance(tree.body, ast.Call):
-                raise ValueError("Expected a function call")
-            call = tree.body
-            result: dict[str, Any] = {"_metadata": "do"}
-            for keyword in call.keywords:
-                if keyword.arg is not None:
-                    result[keyword.arg] = ast.literal_eval(keyword.value)
-            return result
-        except (SyntaxError, ValueError) as e:
-            raise ValueError(f"Failed to parse do() action: {e}") from e
-
-    def _parse_info(self, response: str) -> dict[str, Any]:
-        try:
-            tree = ast.parse(response, mode="eval")
-            if not isinstance(tree.body, ast.Call):
-                raise ValueError("Expected a function call")
-            call = tree.body
-            result: dict[str, Any] = {"_metadata": "info"}
-            for keyword in call.keywords:
-                if keyword.arg is not None:
-                    result[keyword.arg] = ast.literal_eval(keyword.value)
-            return result
-        except (SyntaxError, ValueError) as e:
-            raise ValueError(f"Failed to parse info() action: {e}") from e
-
-    def _parse_finish(self, response: str) -> dict[str, Any]:
-        try:
-            tree = ast.parse(response, mode="eval")
-            if not isinstance(tree.body, ast.Call):
-                raise ValueError("Expected a function call")
-            call = tree.body
-            result: dict[str, Any] = {"_metadata": "finish"}
-            for keyword in call.keywords:
-                if keyword.arg is not None:
-                    result[keyword.arg] = ast.literal_eval(keyword.value)
-            return result
-        except (SyntaxError, ValueError):
-            # Fallback: 简单提取消息内容（兼容消息中包含引号的情况）
-            message = response.replace("finish(message=", "")
-            # 移除首尾引号和末尾括号
-            if message.startswith('"') and message.endswith('")'):
-                message = message[1:-2]
-            elif message.startswith("'") and message.endswith("')"):
-                message = message[1:-2]
-            return {"_metadata": "finish", "message": message}
+    @staticmethod
+    def _parse_call(response: str) -> dict[str, Any]:
+        call = ast.parse(response, mode="eval").body
+        if (
+            not isinstance(call, ast.Call)
+            or not isinstance(call.func, ast.Name)
+            or call.func.id not in {"do", "info", "finish"}
+            or call.args
+        ):
+            raise ValueError("Expected do, info or finish with keyword arguments")
+        result: dict[str, Any] = {"_metadata": call.func.id}
+        for keyword in call.keywords:
+            if keyword.arg is None or keyword.arg in result:
+                raise ValueError("Expanded or duplicate arguments are not supported")
+            result[keyword.arg] = ast.literal_eval(keyword.value)
+        if call.func.id == "finish" and (
+            set(result) - {"_metadata", "message"}
+            or not isinstance(result.get("message", ""), str)
+        ):
+            raise ValueError("finish accepts only a text message")
+        return result
 
     @staticmethod
     def _re_parse(response: str) -> str:

@@ -424,6 +424,70 @@ def test_layered_task_run_closes_stream_iterator_on_cancel() -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "phase,reported,total,unknown",
+    [("executing", 0, 3, False), ("verifying", 4, 7, False), ("executing", 0, 3, True)],
+)
+def test_layered_cancel_counts_steps_without_tool_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase, reported, total, unknown
+) -> None:
+    from types import SimpleNamespace
+
+    import AutoGLM_GUI.layered_agent_service as layered_service
+
+    class FakeRun:
+        final_output = ""
+        context = SimpleNamespace(
+            total_steps=total,
+            fatal_result=SimpleNamespace(
+                status="unknown",
+                stop_reason="device_outcome_unknown",
+                message="设备操作结果待确认",
+            )
+            if unknown
+            else None,
+        )
+
+        async def cancel(self):
+            pass
+
+        async def stream_events(self):
+            if reported:
+                yield {"type": "tool_result", "payload": {"steps": reported}}
+            yield {"type": "subtask_progress", "payload": {"phase": phase}}
+            yield {"type": "cancelled", "payload": {"message": "cancelled"}}
+
+    monkeypatch.setattr(layered_service, "start_run", lambda **kwargs: FakeRun())
+
+    async def scenario():
+        store = TaskStore(tmp_path / "tasks.db")
+        manager = TaskManager(store)
+        task = store.create_task_run(
+            source="chat",
+            executor_key="layered_chat",
+            device_id="phone",
+            device_serial="phone",
+            input_text="test cancelled segment",
+        )
+        await manager._execute_layered_task(
+            task,
+            session_id="session",
+            clear_session_after_run=False,
+            metrics_source="layered",
+        )
+        final = store.get_task(str(task["id"]))
+        assert final is not None
+        assert final["status"] == (
+            TaskStatus.FAILED.value if unknown else TaskStatus.CANCELLED.value
+        )
+        if unknown:
+            assert final["stop_reason"] == "device_outcome_unknown"
+        assert final["step_count"] == total
+        store.close()
+
+    asyncio.run(scenario())
+
+
 def test_submit_chat_task_uses_layered_executor_for_layered_sessions(
     tmp_path: Path,
 ) -> None:

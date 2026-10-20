@@ -56,8 +56,6 @@ export const en = {
     deepModeDesc: 'Deep thinking, suitable for complex tasks',
     agentType: 'Agent Type',
     selectAgentType: 'Select Agent Type',
-    history_n: 'History Count',
-    history_n_hint: 'Number of historical screenshots (1-10)',
     maxSteps: 'Max Execution Steps',
     maxStepsHint: 'Maximum steps per task (1-1000)',
     visionModelTab: 'Vision Model',
@@ -81,16 +79,13 @@ export const en = {
     temperature: 'Sampling Temperature',
     temperatureHint:
       'Sampling temperature (0-2). Use 0 for GLM / AutoGLM models; Kimi K3 requires exactly 1 or the API rejects the request.',
+    unsupportedAgent:
+      'This executor is no longer supported. Choose GLM, General Vision, or Qwen.',
+    configureExecutor: 'Choose executor',
     agentGlmDesc:
       'Optimized for GLM models, mature and stable, suitable for most tasks',
-    agentMaiDesc:
-      'Developed by Alibaba Tongyi, supports context from multiple historical screenshots',
     agentGeminiDesc:
       'General vision model, supports Gemini/GPT-4o etc., uses Function Calling',
-    agentDroidrunDesc:
-      'Based on DroidRun framework, requires Portal APK installation',
-    agentMidsceneDesc:
-      'Midscene.js vision-driven, requires Node.js environment',
     agentQwenDesc: 'Adapted for Qwen3.6 series',
   },
   deviceSidebar: {
@@ -447,6 +442,26 @@ export const en = {
     selectWorkflow: 'Select Workflow',
   },
   chatkit: {
+    status: {
+      completed: 'Verified complete',
+      partial: 'Partially complete',
+      blocked: 'Blocked',
+      failed: 'Failed',
+      cancelled: 'Cancelled',
+      needs_user: 'Needs your input',
+      unknown: 'Outcome unknown',
+    },
+    phase: { executing: 'Executing', verifying: 'Verifying' },
+    verdict: { met: 'Met', unmet: 'Unmet', unknown: 'Uncertain' },
+    totalSteps: '{count} steps in total',
+    verificationDetails: 'View verification',
+    noVerification: 'No completion checks are available yet.',
+    observedAt: 'Observed at',
+    stopReason: 'Stop reason',
+    newTaskAfterTakeover:
+      'Complete the required action, then describe the current state and submit a new task. The new task observes the device again; it does not resume the previous execution.',
+    unknownOutcomeHint:
+      'Check the current device state before submitting another action to avoid duplicates.',
     title: 'AI Assistant',
     layeredAgent: 'Automatic planning',
     layeredAgentDesc:
@@ -457,8 +472,6 @@ export const en = {
     classicModeDesc: 'Vision model executes tasks directly',
     layeredModeDesc:
       'Planner decomposes tasks, executor handles subtasks independently',
-    maiUIModeDesc:
-      'Alibaba Cloud MAI-UI model, open-source high-performance GUI Agent',
   },
   historyPage: {
     title: 'Conversation History',

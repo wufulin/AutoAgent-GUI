@@ -275,9 +275,11 @@ Dual model mode combines a **decision model (planning & recovery)** with a **vis
 
 Layered Agent is a stricter two-layer design: the **planner** focuses on decomposition and multi-turn reasoning, while the **executor** focuses on observing and operating the phone.
 
-- **How it works**: the planner calls tools (e.g., `list_devices()` / `chat(device_id, message)`) to drive the executor; you can see tool calls and results in the UI
-- **Granularity**: the executor runs small, atomic sub-tasks with a step limit, so the planner can adjust strategy based on feedback
-- **Important limitation**: the executor doesn’t “take notes” or reliably extract/save text as variables—you must ask it to read what’s on screen when you need information
+- **How it works**: the planner submits a goal, visible success criteria, and constraints through `execute_subtask`; the UI shows structured results and verification outcomes.
+- **Granularity**: each segment defaults to 10 steps (request range: 1–20). A partial result can resume with its checkpoint and existing context within the current task.
+- **Completion**: `finish` requests verification. The service captures a fresh screenshot and asks the configured vision model to check every criterion before reporting completion. Failed, cancelled, uncertain, and user-intervention results cannot become success through planner text.
+
+Supported executors are GLM, Qwen, and General Vision (Gemini). Removed MAI, DroidRun, and Midscene selections remain readable as unsupported configuration; select a supported type and save to clear obsolete options. Existing history remains readable.
 
 ### Manual Control Mode
 

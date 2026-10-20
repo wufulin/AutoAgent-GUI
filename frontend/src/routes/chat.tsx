@@ -40,7 +40,6 @@ import {
   Sparkles,
   Cpu,
   Info,
-  Smartphone,
   Loader2,
 } from 'lucide-react';
 import { useTranslation } from '../lib/i18n-context';
@@ -94,36 +93,11 @@ const AGENT_PRESETS = [
     defaultConfig: {},
   },
   {
-    name: 'mai',
-    displayName: 'MAI Agent',
-    descriptionKey: 'agentMaiDesc',
-    icon: Brain,
-    defaultConfig: {
-      history_n: 3,
-    },
-  },
-  {
     name: 'gemini',
     displayName: 'General Vision Agent',
     descriptionKey: 'agentGeminiDesc',
     icon: Sparkles,
     defaultConfig: {},
-  },
-  {
-    name: 'droidrun',
-    displayName: 'DroidRun Agent',
-    descriptionKey: 'agentDroidrunDesc',
-    icon: Smartphone,
-    defaultConfig: {},
-  },
-  {
-    name: 'midscene',
-    displayName: 'Midscene Agent',
-    descriptionKey: 'agentMidsceneDesc',
-    icon: Eye,
-    defaultConfig: {
-      model_family: 'doubao-vision',
-    },
   },
   {
     name: 'qwen',
@@ -133,6 +107,12 @@ const AGENT_PRESETS = [
     defaultConfig: {},
   },
 ] as const;
+
+function isSupportedAgent(agentType: string | undefined): boolean {
+  return AGENT_PRESETS.some(
+    preset => preset.name === (agentType || 'glm-async')
+  );
+}
 
 // 决策模型预设配置（与视觉模型保持一致）
 const DECISION_PRESETS = [
@@ -265,6 +245,9 @@ export function ChatComponent() {
   // Used to restore unsaved edits when the config dialog is closed without saving.
   const lastCommittedTempConfigRef = useRef(structuredClone(tempConfig));
 
+  const [configuredAgentSupported, setConfiguredAgentSupported] = useState<
+    boolean | null
+  >(null);
   const selectedVisionPreset = getSelectedVisionPreset(tempConfig.base_url);
   const selectedDecisionPreset = getSelectedDecisionPreset(
     tempConfig.decision_base_url
@@ -274,6 +257,10 @@ export function ChatComponent() {
     const loadConfiguration = async () => {
       try {
         const data = await getConfig();
+        setConfiguredAgentSupported(
+          data.agent_type_supported !== false &&
+            isSupportedAgent(data.agent_type)
+        );
         setConfig({
           base_url: data.base_url,
           model_name: data.model_name,
@@ -356,6 +343,10 @@ export function ChatComponent() {
   ]);
 
   const handleSaveConfig = async () => {
+    if (!isSupportedAgent(tempConfig.agent_type)) {
+      showToast(t.chat.unsupportedAgent, 'error');
+      return;
+    }
     if (!tempConfig.base_url) {
       showToast(t.chat.baseUrlRequired, 'error');
       return;
@@ -369,10 +360,7 @@ export function ChatComponent() {
         api_key: tempConfig.api_key || undefined,
         temperature: tempConfig.temperature,
         agent_type: tempConfig.agent_type,
-        agent_config_params:
-          Object.keys(tempConfig.agent_config_params).length > 0
-            ? tempConfig.agent_config_params
-            : undefined,
+        agent_config_params: tempConfig.agent_config_params,
         default_max_steps:
           tempConfig.default_max_steps === ''
             ? null
@@ -383,16 +371,14 @@ export function ChatComponent() {
         decision_api_key: tempConfig.decision_api_key || undefined,
       });
 
+      const effectiveConfig = await getConfig();
       setConfig({
         base_url: tempConfig.base_url,
         model_name: tempConfig.model_name,
         api_key: tempConfig.api_key || undefined,
         temperature: tempConfig.temperature,
         agent_type: tempConfig.agent_type,
-        agent_config_params:
-          Object.keys(tempConfig.agent_config_params).length > 0
-            ? tempConfig.agent_config_params
-            : undefined,
+        agent_config_params: tempConfig.agent_config_params,
         default_max_steps:
           tempConfig.default_max_steps === ''
             ? null
@@ -402,6 +388,11 @@ export function ChatComponent() {
         decision_model_name: tempConfig.decision_model_name || undefined,
         decision_api_key: tempConfig.decision_api_key || undefined,
       });
+
+      setConfiguredAgentSupported(
+        effectiveConfig.agent_type_supported !== false &&
+          isSupportedAgent(effectiveConfig.agent_type)
+      );
 
       // 配置已保存，后端支持热更新，无需重启
       showToast(t.toasts.configSaved, 'success');
@@ -748,6 +739,14 @@ export function ChatComponent() {
               </div>
 
               {/* Agent 类型选择 */}
+              {!isSupportedAgent(tempConfig.agent_type) && (
+                <p
+                  role="alert"
+                  className="text-sm text-amber-700 dark:text-amber-400"
+                >
+                  {t.chat.unsupportedAgent} ({tempConfig.agent_type})
+                </p>
+              )}
               <div className="space-y-2">
                 <Label className="text-sm font-medium">
                   {t.chat.agentType || 'Agent 类型'}
@@ -803,71 +802,6 @@ export function ChatComponent() {
                   ))}
                 </div>
               </div>
-
-              {/* MAI Agent 特定配置 */}
-              {tempConfig.agent_type === 'mai' && (
-                <div className="space-y-2">
-                  <Label htmlFor="history_n">
-                    {t.chat.history_n || '历史记录数量'}
-                  </Label>
-                  <Input
-                    id="history_n"
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={
-                      (tempConfig.agent_config_params?.history_n as
-                        | number
-                        | undefined) || 3
-                    }
-                    onChange={e => {
-                      const value = parseInt(e.target.value) || 3;
-                      setTempConfig(prev => ({
-                        ...prev,
-                        agent_config_params: {
-                          ...prev.agent_config_params,
-                          history_n: value,
-                        },
-                      }));
-                    }}
-                    className="w-full"
-                  />
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    {t.chat.history_n_hint || '包含的历史截图数量（1-10）'}
-                  </p>
-                </div>
-              )}
-
-              {/* Midscene Agent 特定配置 */}
-              {tempConfig.agent_type === 'midscene' && (
-                <div className="space-y-2">
-                  <Label htmlFor="model_family">模型家族 (Model Family)</Label>
-                  <Input
-                    id="model_family"
-                    type="text"
-                    placeholder="e.g. doubao-vision, gemini, qwen3.5"
-                    value={
-                      (tempConfig.agent_config_params?.model_family as
-                        | string
-                        | undefined) || 'doubao-vision'
-                    }
-                    onChange={e => {
-                      setTempConfig(prev => ({
-                        ...prev,
-                        agent_config_params: {
-                          ...prev.agent_config_params,
-                          model_family: e.target.value,
-                        },
-                      }));
-                    }}
-                    className="w-full"
-                  />
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Midscene
-                    视觉模型家族标识，常用：doubao-vision、doubao-seed、gemini、qwen3.5
-                  </p>
-                </div>
-              )}
 
               {/* 最大执行步数配置 */}
               <div className="space-y-2">
@@ -1227,7 +1161,11 @@ export function ChatComponent() {
             >
               {t.chat.cancel}
             </Button>
-            <Button onClick={handleSaveConfig} variant="twitter">
+            <Button
+              onClick={handleSaveConfig}
+              disabled={!isSupportedAgent(tempConfig.agent_type)}
+              variant="twitter"
+            >
               <CheckCircle2 className="w-4 h-4 mr-2" />
               {t.chat.saveConfig}
             </Button>
@@ -1289,6 +1227,21 @@ export function ChatComponent() {
                   deviceId={currentDevice.id}
                   deviceName={currentDevice.display_name || currentDevice.model}
                 />
+              ) : configuredAgentSupported === null ? (
+                <Loader2 className="h-6 w-6 animate-spin" />
+              ) : !configuredAgentSupported ? (
+                <div className="flex flex-col items-center justify-center gap-4 p-6 text-center">
+                  <p role="alert">{t.chat.unsupportedAgent}</p>
+                  <Button
+                    onClick={() => {
+                      setTempChatMode(chatMode);
+                      setConfigTab('vision');
+                      setShowConfig(true);
+                    }}
+                  >
+                    {t.chat.configureExecutor}
+                  </Button>
+                </div>
               ) : chatMode === 'chatkit' ? (
                 <div className="w-full flex items-stretch justify-center">
                   {config &&

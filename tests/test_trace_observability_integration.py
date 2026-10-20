@@ -17,6 +17,7 @@ import AutoGLM_GUI.layered_agent_service as layered_service
 from AutoGLM_GUI.actions import ActionHandler
 from AutoGLM_GUI.devices.adb_device import ADBDevice
 from AutoGLM_GUI.metrics import get_metrics_registry, reset_trace_latency_metrics
+from AutoGLM_GUI.subtasks import SubtaskResult, SubtaskRunContext, Verification
 from AutoGLM_GUI.task_manager import TaskManager
 from AutoGLM_GUI.task_store import TaskStatus, TaskStore
 from AutoGLM_GUI.trace import trace_span
@@ -48,8 +49,9 @@ def _fake_adb_run(*_: Any, **__: Any) -> SimpleNamespace:
 class _FakePlannerStreamingResult:
     final_output = "Planner confirmed the debug scenario completed."
 
-    def __init__(self, device_id: str) -> None:
+    def __init__(self, device_id: str, context: SubtaskRunContext) -> None:
         self.device_id = device_id
+        self.context = context
         self.cancelled = False
 
     def cancel(self, mode: str = "immediate") -> None:
@@ -76,6 +78,7 @@ class _FakePlannerStreamingResult:
                 type="tool_call_item",
                 raw_item={
                     "name": "chat",
+                    "call_id": "trace-call",
                     "arguments": json.dumps(
                         {
                             "device_id": self.device_id,
@@ -139,14 +142,37 @@ class _FakePlannerStreamingResult:
                     ):
                         pass
 
+        # The simulated executor must supply completion evidence as well as
+        # text. Planner output by itself no longer certifies a phone task.
+        verified = SubtaskResult(
+            subtask_id="trace-subtask",
+            goal="发送你好给张三",
+            status="completed",
+            message="已发送你好给张三",
+            stop_reason="goal_verified",
+            steps=1,
+            total_steps=1,
+            success_criteria=["发送结果可见"],
+            verification=Verification(
+                criteria=[
+                    {
+                        "criterion": "发送结果可见",
+                        "verdict": "met",
+                        "reason": "模拟验收帧显示发送结果",
+                    }
+                ],
+                facts=["模拟发送结果"],
+                observed_at="2026-01-01T00:00:00+00:00",
+                screenshot_sha256="mock-verification-frame",
+            ),
+        )
+        self.context.results[verified.subtask_id] = verified
         yield RunItemStreamEvent(
             name="tool_output",
             item=SimpleNamespace(
                 type="tool_call_output_item",
-                output=json.dumps(
-                    {"result": "已发送你好给张三", "steps": 1, "success": True},
-                    ensure_ascii=False,
-                ),
+                raw_item={"call_id": "trace-call"},
+                output=verified.envelope(),
             ),
         )
         yield RawResponsesStreamEvent(
@@ -207,11 +233,15 @@ def test_layered_task_trace_observability_covers_debug_surface(
                 "max_turns": 100000,
             },
         ):
+            context = SubtaskRunContext(
+                task_id, session_id, device_id, 100, "trace-config"
+            )
             return layered_service.LayeredTaskRun(
                 task_id=task_id,
                 session_id=session_id,
-                result=_FakePlannerStreamingResult("adb-debug-device"),
+                result=_FakePlannerStreamingResult("adb-debug-device", context),
                 device_id=device_id,
+                context=context,
             )
 
     monkeypatch.setattr(layered_service, "start_run", fake_start_run)

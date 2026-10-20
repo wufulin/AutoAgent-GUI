@@ -13,6 +13,7 @@ from io import BytesIO
 from datetime import datetime
 from PIL import Image, ImageDraw
 
+from AutoGLM_GUI.actions import ActionResult
 from AutoGLM_GUI.agents.base import AsyncAgentBase
 from AutoGLM_GUI.agents.protocols import AsyncAgent
 from AutoGLM_GUI.config import AgentConfig, ModelConfig
@@ -156,6 +157,7 @@ class AsyncQwenAgent(AsyncAgentBase, AsyncAgent):
                     "success": False,
                     "finished": True,
                     "message": f"Device error: {e}",
+                    "stop_reason": "device_error",
                 },
             }
             return
@@ -266,6 +268,7 @@ class AsyncQwenAgent(AsyncAgentBase, AsyncAgent):
                     "success": False,
                     "finished": True,
                     "message": f"Model error: {e}",
+                    "stop_reason": "model_error",
                 },
             }
             return
@@ -282,11 +285,22 @@ class AsyncQwenAgent(AsyncAgentBase, AsyncAgent):
             try:
                 action = self.parser.parse(action_str)
             except ValueError as e:
-                if self.agent_config.verbose:
-                    logger.warning(
-                        f"Failed to parse action: {action_str}, err: {e}, treating as finish"
-                    )
-                action = {"_metadata": "finish", "message": action_str}
+                self._context[-1] = MessageBuilder.remove_images_from_message(
+                    self._context[-1]
+                )
+                yield {
+                    "type": "step",
+                    "data": {
+                        "step": self._step_count,
+                        "thinking": thinking,
+                        "action": None,
+                        "success": False,
+                        "finished": True,
+                        "stop_reason": "parse_error",
+                        "message": f"Invalid model action: {e}",
+                    },
+                }
+                return
 
             if self.agent_config.verbose:
                 logger.debug(f"raw_content: \n\n {raw_content}\n\n")
@@ -326,17 +340,25 @@ class AsyncQwenAgent(AsyncAgentBase, AsyncAgent):
                     "action_type": action.get("_metadata"),
                 },
             ):
-                result = await self.action_handler.execute(
-                    action,
-                    screenshot.width,
-                    screenshot.height,
-                )
+                if action.get("_metadata") == "info":
+                    question = action.get("question")
+                    result = ActionResult(
+                        success=True,
+                        should_finish=False,
+                        message=question
+                        if isinstance(question, str) and question.strip()
+                        else "User input required",
+                    )
+                else:
+                    result = await self.action_handler.execute(
+                        action,
+                        screenshot.width,
+                        screenshot.height,
+                    )
         except Exception as e:
             logger.error(f"Action execution error: {e}")
             if self.agent_config.verbose:
                 logger.debug(traceback.format_exc())
-            from AutoGLM_GUI.actions import ActionResult
-
             result = ActionResult(success=False, should_finish=True, message=str(e))
 
         # 6. 更新上下文
@@ -355,7 +377,10 @@ class AsyncQwenAgent(AsyncAgentBase, AsyncAgent):
 
         # 6.5. 检测需要用户交互的 action (Take_over / Interact)
         interaction_actions = ("Take_over", "Interact")
-        if action.get("action") in interaction_actions:
+        if (
+            action.get("action") in interaction_actions
+            or action.get("_metadata") == "info"
+        ):
             if self.agent_config.verbose:
                 logger.debug(f"Waiting for user input after {action.get('action')}")
             yield {

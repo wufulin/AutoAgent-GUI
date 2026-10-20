@@ -2,9 +2,6 @@
 
 from pathlib import Path
 
-# Import MAI prompt from new location
-from AutoGLM_GUI.agents.mai.prompts import MAI_MOBILE_SYSTEM_PROMPT
-
 # Import from parent-level prompts.py file
 # When prompts/ directory exists, Python prioritizes it over prompts.py
 # We need to import from sibling prompts.py file
@@ -26,7 +23,6 @@ else:
     MCP_SYSTEM_PROMPT_EN = ""
 
 __all__ = [
-    "MAI_MOBILE_SYSTEM_PROMPT",
     "MCP_SYSTEM_PROMPT_ZH",
     "MCP_SYSTEM_PROMPT_EN",
 ]

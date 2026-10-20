@@ -381,9 +381,11 @@ class TestLocalE2E:
             f"Expected 9 tap commands (10 steps - 1 finish), got {len(tap_commands)}. All commands: {commands}"
         )
 
-        # Note: The state machine doesn't transition to 'finished' because finish() is an
-        # agent-level action, not a device action. The state machine stays in the last
-        # state that was tapped ('back_to_list'). We verify agent completion instead.
+        # The ninth tap must actually reach the terminal device state. A final
+        # model finish is insufficient if a prior tap missed its target.
+        device_state = test_client.get_state()
+        assert device_state["current_state"] == "finished"
+        assert len(device_state["history"]) == 10
 
         # Verify agent completed successfully
         assert result["success"] is True, "Agent should have completed successfully"

@@ -20,6 +20,7 @@ from AutoGLM_GUI.schemas import (
     StatusResponse,
 )
 from AutoGLM_GUI.version import APP_VERSION
+from AutoGLM_GUI.types import SUPPORTED_AGENT_TYPES, normalize_agent_type
 
 router = APIRouter()
 
@@ -221,6 +222,7 @@ def get_config_endpoint() -> ConfigResponse:
         source=source.value,
         temperature=effective_config.temperature,
         agent_type=effective_config.agent_type,
+        agent_type_supported=effective_config.agent_type in SUPPORTED_AGENT_TYPES,
         agent_config_params=effective_config.agent_config_params,
         default_max_steps=effective_config.default_max_steps,
         layered_max_turns=effective_config.layered_max_turns,
@@ -248,6 +250,7 @@ def save_config_endpoint(request: ConfigSaveRequest) -> dict[str, Any]:
     配置保存后会自动热更新，所有 Agent 将被销毁并在下次使用时用新配置重新创建。
     """
     from AutoGLM_GUI.config_manager import ConfigModel, config_manager
+    from AutoGLM_GUI.exceptions import DeviceBusyError
     from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
 
     try:
@@ -260,66 +263,86 @@ def save_config_endpoint(request: ConfigSaveRequest) -> dict[str, Any]:
             layered_max_turns=request.layered_max_turns,
         )
 
-        provided_fields = request.model_fields_set
-
-        # 保存配置（合并模式，不丢失字段）
-        success = config_manager.save_file_config(
-            base_url=request.base_url,
-            model_name=request.model_name,
-            api_key=request.api_key,
-            temperature=request.temperature,
-            agent_type=request.agent_type,
-            agent_config_params=request.agent_config_params,
-            default_max_steps=request.default_max_steps,
-            layered_max_turns=request.layered_max_turns,
-            decision_base_url=request.decision_base_url,
-            decision_model_name=request.decision_model_name,
-            decision_api_key=request.decision_api_key,
-            merge_mode=True,
-            default_max_steps_set="default_max_steps" in provided_fields,
-            layered_max_turns_set="layered_max_turns" in provided_fields,
-        )
-
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to save config")
-
-        # 同步到环境变量
-        config_manager.sync_to_env()
-
-        # 强制重新加载配置文件，确保立即生效
-        config_manager.load_file_config(force_reload=True)
-
-        # 销毁所有已存在的 Agent，让它们在下次使用时用新配置重新创建
         agent_manager = PhoneAgentManager.get_instance()
-        destroyed_count = agent_manager.destroy_all_agents()
+        with agent_manager.configuration_update():
+            provided_fields = request.model_fields_set
+            config_manager.load_file_config()
+            selected_agent_type = normalize_agent_type(
+                request.agent_type
+                if "agent_type" in provided_fields
+                else config_manager.get_effective_config().agent_type
+            )
+            if selected_agent_type not in SUPPORTED_AGENT_TYPES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Agent type '{selected_agent_type}' is not supported. "
+                        "Select glm-async, qwen, or gemini in settings."
+                    ),
+                )
+            # 保存配置（合并模式，不丢失字段）
+            success = config_manager.save_file_config(
+                base_url=request.base_url,
+                model_name=request.model_name,
+                api_key=request.api_key,
+                temperature=request.temperature,
+                agent_type=selected_agent_type,
+                agent_config_params=request.agent_config_params,
+                default_max_steps=request.default_max_steps,
+                layered_max_turns=request.layered_max_turns,
+                decision_base_url=request.decision_base_url,
+                decision_model_name=request.decision_model_name,
+                decision_api_key=request.decision_api_key,
+                merge_mode=True,
+                default_max_steps_set="default_max_steps" in provided_fields,
+                layered_max_turns_set="layered_max_turns" in provided_fields,
+            )
 
-        # 检测冲突并返回警告
-        conflicts = config_manager.detect_conflicts()
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to save config")
 
-        response_message = (
-            f"Configuration saved to {config_manager.get_config_path()}. "
-            f"Destroyed {destroyed_count} agent(s). "
-            "New agents will be created with updated configuration on next use."
-        )
+            # 同步到环境变量
+            config_manager.sync_to_env()
 
-        if conflicts:
-            warnings = [
-                f"{c.field}: file value overridden by {c.override_source.value}"
-                for c in conflicts
-            ]
+            # 强制重新加载配置文件，确保立即生效
+            config_manager.load_file_config(force_reload=True)
+
+            # 销毁所有已存在的 Agent，让它们在下次使用时用新配置重新创建
+            destroyed_count = agent_manager.destroy_all_agents()
+
+            # 检测冲突并返回警告
+            conflicts = config_manager.detect_conflicts()
+
+            response_message = (
+                f"Configuration saved to {config_manager.get_config_path()}. "
+                f"Destroyed {destroyed_count} agent(s). "
+                "New agents will be created with updated configuration on next use."
+            )
+
+            if conflicts:
+                warnings = [
+                    f"{c.field}: file value overridden by {c.override_source.value}"
+                    for c in conflicts
+                ]
+                return {
+                    "success": True,
+                    "message": response_message,
+                    "warnings": warnings,
+                    "restart_required": False,
+                }
+
             return {
                 "success": True,
                 "message": response_message,
-                "warnings": warnings,
                 "restart_required": False,
             }
 
-        return {
-            "success": True,
-            "message": response_message,
-            "restart_required": False,
-        }
-
+    except DeviceBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except HTTPException as e:
+        if e.status_code == 422:
+            raise
+        raise HTTPException(status_code=500, detail=str(e))
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=f"Invalid configuration: {e}")
     except Exception as e:
@@ -330,15 +353,21 @@ def save_config_endpoint(request: ConfigSaveRequest) -> dict[str, Any]:
 def delete_config_endpoint() -> dict[str, Any]:
     """删除配置文件."""
     from AutoGLM_GUI.config_manager import config_manager
+    from AutoGLM_GUI.exceptions import DeviceBusyError
+    from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
 
     try:
-        success = config_manager.delete_file_config()
+        agent_manager = PhoneAgentManager.get_instance()
+        with agent_manager.configuration_update():
+            success = config_manager.delete_file_config()
 
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to delete config")
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to delete config")
 
-        return {"success": True, "message": "Configuration deleted"}
+            return {"success": True, "message": "Configuration deleted"}
 
+    except DeviceBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

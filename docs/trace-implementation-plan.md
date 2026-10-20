@@ -101,7 +101,7 @@
 1. 新增 `AutoGLM_GUI/trace.py`
 2. 先接 API 根 trace
 3. 再接 `AsyncAgentBase` 主循环
-4. 再接 GLM、Gemini、MAI 的 step 内部分段
+4. 再接 GLM、Gemini、Qwen 的 step 内部分段
 5. 接入 `ActionHandler`
 6. 接入 ADB 和 RemoteDevice 热路径 IO
 7. 加最小测试和校验命令

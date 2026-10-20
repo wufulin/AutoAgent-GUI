@@ -4,7 +4,7 @@ test.beforeEach(async ({ page }, info) => {
   await page.route('**/api/devices', route =>
     route.fulfill({ json: { devices: [] } })
   );
-  if (!info.title.startsWith('renders H.264')) await page.goto('/');
+  if (!info.title.startsWith('renders H.264')) await page.goto('/about');
 });
 
 test('serializes gestures and coalesces queued movement before release', async ({
@@ -222,7 +222,8 @@ test('renders H.264 and releases a pointer dragged outside the canvas', async ({
       }
     });
   });
-  await page.goto('/');
+  // Mount the isolated monitor on a route without chat configuration dialogs.
+  await page.goto('/about');
   // Generate public, synthetic video pixels. No device screen or ADB is involved.
   encoded = await page.evaluate(async () => {
     const canvas = new OffscreenCanvas(64, 128);

@@ -131,7 +131,7 @@ async def _stream_layered_task(task_id: str) -> AsyncGenerator[str, None]:
         for event in events:
             last_seq = int(event["seq"])
             event_type = str(event["event_type"])
-            if event_type in {"status", "user_message"}:
+            if event_type in {"status", "user_message", "subtask_progress"}:
                 continue
 
             compat_payload = _compat_sse_payload(event_type, dict(event["payload"]))

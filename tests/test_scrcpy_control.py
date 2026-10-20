@@ -215,11 +215,14 @@ async def test_server_serializes_concurrent_commands(manager):
 
 @pytest.mark.anyio
 async def test_ai_blocks_manual_and_invalid_coordinates_do_not_write(manager):
-    from AutoGLM_GUI.phone_agent_manager import AgentState
-    from types import SimpleNamespace
+    from AutoGLM_GUI.config import AgentConfig, ModelConfig
+    from AutoGLM_GUI.phone_agent_manager import AgentMetadata, AgentState
 
-    manager._metadata["phone:chat"] = SimpleNamespace(
-        device_id="phone", state=AgentState.BUSY
+    manager._metadata["phone:chat"] = AgentMetadata(
+        device_id="phone",
+        state=AgentState.BUSY,
+        model_config=ModelConfig(),
+        agent_config=AgentConfig(device_id="phone"),
     )
     transport = AsyncMock()
     session = ControlSession("phone", transport)

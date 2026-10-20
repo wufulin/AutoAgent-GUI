@@ -9,22 +9,6 @@ ActionMetadata = Literal["do", "finish", "takeover"]
 PhoneActionType = Literal[
     "Tap", "Swipe", "Type", "Launch", "Wait", "Back", "Home", "Long Press", "Double Tap"
 ]
-MAIActionType = Literal[
-    "click",
-    "swipe",
-    "type",
-    "terminate",
-    "answer",
-    "wait",
-    "long_press",
-    "double_click",
-    "open",
-    "system_button",
-    "drag",
-]
-SwipeDirection = Literal["up", "down", "left", "right"]
-SystemButton = Literal["back", "home", "enter"]
-TerminateStatus = Literal["success", "failure"]
 MessageRole = Literal["system", "user", "assistant"]
 ContentType = Literal["text", "image_url"]
 
@@ -39,17 +23,6 @@ class PhoneAgentAction(TypedDict, total=False):
     end: list[int]
     duration: str
     message: str
-
-
-class MAIAction(TypedDict, total=False):
-    action: MAIActionType
-    coordinate: list[float]
-    direction: SwipeDirection
-    text: str
-    button: SystemButton
-    status: TerminateStatus
-    start_coordinate: list[float]
-    end_coordinate: list[float]
 
 
 class SSEThinkingChunkData(TypedDict):
@@ -85,19 +58,19 @@ class SSEErrorData(TypedDict):
 SSEEventData = SSEThinkingChunkData | SSEStepData | SSEDoneData | SSEErrorData
 
 
-class MAIAgentSpecificConfig(TypedDict, total=False):
-    history_n: int
-    max_pixels: int
-    min_pixels: int
-    tools: list[dict[str, str]]
-    use_mai_prompt: bool
+class AgentSpecificConfig(TypedDict, total=False):
+    """Reserved agent options; built-in executors currently need no extra fields."""
 
 
-class GLMAgentSpecificConfig(TypedDict, total=False):
-    pass
+SUPPORTED_AGENT_TYPES = frozenset(
+    {"glm-async", "async-glm", "qwen", "gemini", "general-vision"}
+)
+REMOVED_AGENT_TYPES = frozenset({"mai", "droidrun", "midscene"})
 
 
-AgentSpecificConfig = MAIAgentSpecificConfig | GLMAgentSpecificConfig
+def normalize_agent_type(agent_type: str) -> str:
+    """Keep the original GLM name readable while using its current executor."""
+    return "glm-async" if agent_type == "glm" else agent_type
 
 
 class TextContent(TypedDict):
@@ -119,11 +92,6 @@ class ChatMessage(TypedDict, total=False):
 
 
 ConversationContext = list[ChatMessage]
-
-
-class Observation(TypedDict, total=False):
-    screenshot: object
-    accessibility_tree: dict[str, object] | None
 
 
 class DeviceConnectionType(Enum):
