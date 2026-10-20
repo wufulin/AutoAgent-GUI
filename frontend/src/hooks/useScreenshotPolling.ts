@@ -1,5 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
-import { getScreenshot, type ScreenshotResponse } from '../api';
+import { useEffect, useState } from 'react';
+import {
+  getErrorMessage,
+  getScreenshot,
+  type ScreenshotResponse,
+} from '../api';
 import { usePageVisibility } from './usePageVisibility';
 
 interface UseScreenshotPollingOptions {
@@ -18,8 +22,10 @@ export function useScreenshotPolling({
   pollDelayMs,
 }: UseScreenshotPollingOptions): UseScreenshotPollingResult {
   const isPageVisible = usePageVisibility();
-  const [screenshot, setScreenshot] = useState<ScreenshotResponse | null>(null);
-  const isFetchingRef = useRef(false);
+  const [result, setResult] = useState<{
+    deviceId: string;
+    screenshot: ScreenshotResponse;
+  } | null>(null);
 
   useEffect(() => {
     if (!deviceId || !enabled || !isPageVisible) {
@@ -27,49 +33,63 @@ export function useScreenshotPolling({
     }
 
     let isCancelled = false;
-    let timeoutId: number | null = null;
+    let timeoutId: number | undefined;
+    let controller: AbortController | undefined;
 
-    const fetchScreenshot = async () => {
-      if (isFetchingRef.current || isCancelled) {
-        return;
-      }
+    const pollScreenshots = async () => {
+      controller = new AbortController();
+      const requestController = controller;
+      const requestTimeout = window.setTimeout(() => {
+        requestController.abort();
+      }, 15000);
 
-      isFetchingRef.current = true;
       try {
-        const data = await getScreenshot(deviceId);
-        if (!isCancelled && data.success) {
-          setScreenshot(data);
+        const data = await getScreenshot(deviceId, requestController.signal);
+        if (!isCancelled) {
+          setResult({
+            deviceId,
+            screenshot: data.success
+              ? data
+              : { ...data, error: data.error || 'Screenshot capture failed' },
+          });
         }
       } catch (error) {
         if (!isCancelled) {
-          console.error('Failed to fetch screenshot:', error);
+          setResult({
+            deviceId,
+            screenshot: {
+              success: false,
+              image: '',
+              width: 0,
+              height: 0,
+              is_sensitive: false,
+              error: requestController.signal.aborted
+                ? 'Screenshot request timed out'
+                : getErrorMessage(error),
+            },
+          });
         }
       } finally {
-        isFetchingRef.current = false;
-      }
-    };
-
-    const pollScreenshots = async () => {
-      await fetchScreenshot();
-
-      if (isCancelled) {
-        return;
+        window.clearTimeout(requestTimeout);
       }
 
-      timeoutId = window.setTimeout(() => {
-        void pollScreenshots();
-      }, pollDelayMs);
+      if (!isCancelled) {
+        timeoutId = window.setTimeout(() => {
+          void pollScreenshots();
+        }, pollDelayMs);
+      }
     };
 
     void pollScreenshots();
 
     return () => {
       isCancelled = true;
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-      }
+      window.clearTimeout(timeoutId);
+      controller?.abort();
     };
   }, [deviceId, enabled, isPageVisible, pollDelayMs]);
 
-  return { screenshot };
+  return {
+    screenshot: result?.deviceId === deviceId ? result.screenshot : null,
+  };
 }

@@ -578,12 +578,13 @@ export async function abortChat(deviceId: string): Promise<{
 }
 
 export async function getScreenshot(
-  deviceId?: string | null
+  deviceId?: string | null,
+  signal?: AbortSignal
 ): Promise<ScreenshotResponse> {
   const res = await axios.post(
     '/api/screenshot',
     { device_id: deviceId ?? null },
-    {}
+    { fetch: (input, init) => fetch(input, { ...init, signal }) }
   );
   return res.data;
 }

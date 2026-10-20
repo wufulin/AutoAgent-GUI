@@ -343,7 +343,7 @@ export function DeviceMonitor({
         <span className="flex min-w-0 items-center gap-2" aria-live="polite">
           <Circle
             aria-hidden="true"
-            className={`size-2.5 shrink-0 fill-current ${showVideo && stats.status !== 'video' ? 'text-amber-500' : 'text-emerald-500'}`}
+            className={`size-2.5 shrink-0 fill-current ${showVideo ? (stats.status === 'video' ? 'text-emerald-500' : 'text-amber-500') : screenshot?.success ? 'text-emerald-500' : screenshot?.error ? 'text-destructive' : 'text-amber-500'}`}
           />
           <span>{modeLabel}</span>
         </span>
