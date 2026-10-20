@@ -10,7 +10,7 @@ import {
   type ConfigSaveRequest,
 } from '../api';
 import { DeviceSidebar } from '../components/DeviceSidebar';
-import { Rmq1Panel } from '../components/Rmq1Panel';
+import { Rmq1ChatPanel } from '../components/Rmq1ChatPanel';
 import { DevicePanel } from '../components/DevicePanel';
 import { ChatKitPanel } from '../components/ChatKitPanel';
 import { GroupManageDialog } from '../components/GroupManageDialog';
@@ -1228,9 +1228,9 @@ export function ChatComponent() {
       />
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-h-0 relative">
+      <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
         {/* Content area */}
-        <div className="flex-1 flex items-stretch justify-center min-h-0 px-4 py-4">
+        <div className="flex-1 flex items-stretch justify-center min-h-0 min-w-0 px-4 py-4">
           {!currentDevice ? (
             <div className="flex-1 flex items-center justify-center bg-slate-50 dark:bg-slate-950">
               <div className="text-center">
@@ -1257,10 +1257,13 @@ export function ChatComponent() {
           ) : (
             <div
               key={currentDevice.serial}
-              className="w-full max-w-7xl flex items-stretch justify-center min-h-0"
+              className="w-full max-w-7xl flex items-stretch justify-center min-h-0 min-w-0"
             >
               {currentDevice.connection_type === 'rmq1' ? (
-                <Rmq1Panel deviceId={currentDevice.id} />
+                <Rmq1ChatPanel
+                  deviceId={currentDevice.id}
+                  deviceName={currentDevice.display_name || currentDevice.model}
+                />
               ) : chatMode === 'chatkit' ? (
                 <div className="w-full flex items-stretch justify-center">
                   {config &&
