@@ -149,7 +149,9 @@ class RMQ1Device:
     def check_hid(self) -> None:
         self._check_hid_state(self.transport.result("/api/hid"))
 
-    def _check_hid_state(self, hid: dict[str, Any]) -> None:
+    def _check_hid_state(
+        self, hid: dict[str, Any], *, initializing: bool = False
+    ) -> bool:
         mouse = hid.get("mouse", {})
         output = mouse.get("outputs", {}).get("active")
         if self._mouse_output is not None and output != self._mouse_output:
@@ -157,23 +159,31 @@ class RMQ1Device:
             raise RMQ1Error(self._issue)
         # Hybrid keeps absolute positioning, but routes buttons separately.
         # Relative and touch outputs require different input semantics.
-        if not (
-            hid.get("connected") is True
-            and mouse.get("online") is True
-            and mouse.get("absolute") is True
-            and output in ("usb", "usb_hybrid")
-        ):
-            raise RMQ1Error("请在 RMQ1 控制台启用绝对或混合鼠标，并确认 iPhone 已连接")
+        if hid.get("connected") is not True:
+            raise RMQ1Error("RMQ1 的 USB 连接未就绪，请确认 iPhone 已连接并解锁")
+        if mouse.get("absolute") is not True or output not in ("usb", "usb_hybrid"):
+            raise RMQ1Error("请在 RMQ1 控制台启用绝对或混合鼠标")
         self._mouse_output = output
+        if mouse.get("online") is not True:
+            if initializing:
+                return False
+            raise RMQ1Error("RMQ1 鼠标 HID 未就绪，请保持 iPhone 解锁并重新连接")
+        return True
 
     def start(self) -> None:
         self.geometry()
-        self.check_hid()
+        # GLKVM marks a previously offline HID online only after a successful
+        # report write. Opening the control session clears/releases HID and can
+        # refresh that stale flag. Validate USB/configuration first, then require
+        # an online HID event before starting video or exposing this device.
+        self._check_hid_state(self.transport.result("/api/hid"), initializing=True)
         # GLKVM's on-demand streamer requires a live /ws stream client.
         # Retain this same channel for input; opening/closing another channel
         # would clear HID state in the firmware.
         self._control = self.transport.websocket("/api/ws")
-        self._await_control_event(self._control, "hid", self._hid_state)
+        self._await_control_event(
+            self._control, "hid", self._hid_state, initializing=True
+        )
         self._control_worker = threading.Thread(target=self._keep_control, daemon=True)
         self._control_worker.start()
         self._video = self.transport.websocket("/api/media/ws")
@@ -422,16 +432,24 @@ class RMQ1Device:
         control.send(struct.pack(">Bhh", 3, *(round(v * 65535 - 32768) for v in point)))
 
     def _await_control_event(
-        self, control: Any, expected: str, hid_state: dict[str, Any]
+        self,
+        control: Any,
+        expected: str,
+        hid_state: dict[str, Any],
+        *,
+        initializing: bool = False,
     ) -> None:
         # Drain initial status events so websocket backpressure cannot prevent
         # pong delivery. This acknowledgment only covers the KVM transport.
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + (5 if initializing else 2)
         for _ in range(64):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            raw = control.recv(timeout=remaining)
+            try:
+                raw = control.recv(timeout=remaining)
+            except TimeoutError:
+                break
             if not isinstance(raw, str):
                 raise RMQ1Error("RMQ1 控制协议不支持")
             value = json.loads(raw)
@@ -447,9 +465,12 @@ class RMQ1Device:
                 }
                 hid_state.update(change)
                 hid_state["mouse"] = mouse
-                self._check_hid_state(hid_state)
+                if not self._check_hid_state(hid_state, initializing=initializing):
+                    continue
             if kind == expected:
                 return
+        if initializing:
+            raise RMQ1Error("RMQ1 鼠标 HID 未就绪，请保持 iPhone 解锁并重新连接")
         raise RMQ1Error("RMQ1 未确认控制通道")
 
     def recover(self, session_id: str) -> None:
