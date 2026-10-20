@@ -1,5 +1,5 @@
 # Reusable workflow for Electron builds
-# Used by both build.yml (CI) and release.yml (Release)
+# Used by release.yml for tag releases
 name: Electron Build
 
 on:
