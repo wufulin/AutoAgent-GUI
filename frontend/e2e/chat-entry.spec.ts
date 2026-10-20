@@ -190,6 +190,14 @@ entryTest(
     await expect(page.locator('#model_name')).toHaveValue('mock-glm-model');
     await expect(page.locator('#api_key')).toHaveValue('mock-key');
     await page.getByRole('button', { name: 'DeepSeek V4.1 Flash' }).click();
+    // Returning to AutoGLM presets must restore their execution protocol.
+    for (const name of ['智谱 BigModel', 'ModelScope']) {
+      await page.getByRole('button', { name, exact: false }).click();
+      await expect(
+        page.getByRole('button', { name: 'GLM Agent', exact: false })
+      ).toHaveClass(/border-\[#1d9bf0\]/);
+      await page.getByRole('button', { name: 'DeepSeek V4.1 Flash' }).click();
+    }
     await page.locator('#api_key').fill('test-vision-key');
     await page.getByRole('tab', { name: '决策模型', exact: true }).click();
     await page.locator('#decision_api_key').fill('');
