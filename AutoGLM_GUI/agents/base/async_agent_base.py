@@ -19,7 +19,7 @@ from openai import AsyncOpenAI
 
 from AutoGLM_GUI.actions import AsyncActionHandler
 from AutoGLM_GUI.config import AgentConfig, ModelConfig
-from AutoGLM_GUI.device_protocol import AsyncDeviceProtocol, DeviceProtocol
+from AutoGLM_GUI.device_protocol import AsyncDeviceProtocol, DeviceProtocol, Screenshot
 from AutoGLM_GUI.devices.async_adapter import AsyncDeviceAdapter
 from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.model import MessageBuilder
@@ -68,12 +68,8 @@ class AsyncAgentBase(ABC):
         self._cancel_event = asyncio.Event()
 
         # System prompt: 优先用配置的，否则用子类默认的
-        system_prompt = self.agent_config.system_prompt
-        if system_prompt is None:
-            system_prompt = self._get_default_system_prompt(self.agent_config.lang)
-
         self._initial_system_message = MessageBuilder.create_system_message(
-            system_prompt
+            self.get_system_prompt()
         )
 
         # State
@@ -81,6 +77,13 @@ class AsyncAgentBase(ABC):
         self._user_image_attachments: list[dict[str, str]] = []
         self._step_count = 0
         self._is_running = False
+        self._initial_screenshot: Screenshot | None = None
+
+    def get_system_prompt(self) -> str:
+        """Resolve the current override without changing the adapter's format."""
+        if self.agent_config.system_prompt is not None:
+            return self.agent_config.system_prompt
+        return self._get_default_system_prompt(self.agent_config.lang)
 
     # ==================== 子类必须实现 ====================
 
@@ -182,6 +185,7 @@ class AsyncAgentBase(ABC):
                         "agent.prepare_initial_context",
                         attrs={"agent_type": self.__class__.__name__},
                     ):
+                        self._initial_screenshot = screenshot
                         self._prepare_initial_context(
                             task,
                             screenshot.base64_data,
@@ -389,7 +393,11 @@ class AsyncAgentBase(ABC):
 
     def reset(self) -> None:
         """重置状态。"""
+        self._initial_system_message = MessageBuilder.create_system_message(
+            self.get_system_prompt()
+        )
         self._context = [copy.deepcopy(self._initial_system_message)]
+        self._initial_screenshot = None
         self._user_image_attachments = []
         self._step_count = 0
         self._is_running = False

@@ -20,6 +20,10 @@ from AutoGLM_GUI.model.error_details import (
     trace_error_attrs,
 )
 from AutoGLM_GUI.trace import summarize_text, trace_span
+from AutoGLM_GUI.phone_agent_trace import (
+    phone_agent_replay_active,
+    record_phone_agent_event,
+)
 
 from .action_mapper import InvalidToolCallError, tool_call_to_action
 from .prompts import get_system_prompt
@@ -70,7 +74,7 @@ class AsyncGeminiAgent(AsyncAgentBase):
     async def _execute_step(self) -> AsyncGenerator[dict[str, Any], None]:
         """执行单步：调用 LLM → 解析 tool call → 执行动作。"""
         self._step_count += 1
-        screenshot = None
+        screenshot = self._initial_screenshot if self._step_count == 1 else None
 
         # 1. 获取截图（非首步）
         if self._step_count > 1:
@@ -117,6 +121,11 @@ class AsyncGeminiAgent(AsyncAgentBase):
                         image_base64=screenshot.base64_data,
                     )
                 )
+
+        observation = screenshot
+        await record_phone_agent_event(
+            "observation", self._step_count, screenshot=observation
+        )
 
         # 2. 调用 LLM with tools
         try:
@@ -282,6 +291,9 @@ class AsyncGeminiAgent(AsyncAgentBase):
             return
 
         # 4. 执行 action
+        await record_phone_agent_event(
+            "action_selected", self._step_count, action=action
+        )
         try:
             with trace_span(
                 "step.capture_screenshot",
@@ -292,6 +304,19 @@ class AsyncGeminiAgent(AsyncAgentBase):
                 },
             ):
                 screenshot = await self.device.get_screenshot()
+            await record_phone_agent_event(
+                "pre_action", self._step_count, screenshot=screenshot
+            )
+            if (
+                observation is not None
+                and action.get("_metadata") != "finish"
+                and (observation.width, observation.height)
+                != (screenshot.width, screenshot.height)
+            ):
+                raise ValueError(
+                    "SCREEN_CHANGED: screen dimensions changed since observation; "
+                    "action was not executed"
+                )
             with trace_span(
                 "step.execute_action",
                 attrs={
@@ -309,6 +334,32 @@ class AsyncGeminiAgent(AsyncAgentBase):
         except Exception as e:
             logger.error(f"Action execution error: {e}")
             result = ActionResult(success=False, should_finish=True, message=str(e))
+
+        await record_phone_agent_event(
+            "action_result",
+            self._step_count,
+            action=action,
+            success=result.success,
+            message=result.message,
+        )
+        if phone_agent_replay_active() and action.get("_metadata") != "finish":
+            try:
+                with trace_span(
+                    "step.capture_screenshot",
+                    attrs={"step": self._step_count, "purpose": "post_action"},
+                ):
+                    after = await self.device.get_screenshot()
+                await record_phone_agent_event(
+                    "post_action", self._step_count, screenshot=after
+                )
+            except Exception:
+                # Observation failure must never turn an executed tap into a
+                # retryable action or hide the original execution result.
+                await record_phone_agent_event(
+                    "post_action_unavailable",
+                    self._step_count,
+                    message="Post-action screenshot unavailable; do not replay blindly",
+                )
 
         # 5. 更新上下文
         with trace_span(
