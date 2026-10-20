@@ -250,6 +250,10 @@ async def connect_device(sid: str, data: dict[str, Any] | None) -> None:
         )
         return
 
+    if str(device_id).startswith("rmq1:"):
+        await sio.emit("error", {"message": "请使用 RMQ1 预览面板"}, to=sid)
+        return
+
     controlled = payload.get("control") is True
     try:
         max_size = max(320, min(1920, int(payload.get("maxSize") or 1280)))

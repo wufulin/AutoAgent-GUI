@@ -22,6 +22,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    "av>=16.0.0",  # RMQ1 H.264 video decoding
+    "websockets>=15.0.1",  # RMQ1 video and HID transport
     "apscheduler>=3.10.0,<4.0.0",  # Scheduled task scheduler
     "fastapi>=0.124.0",
     "fastmcp>=2.0.0",

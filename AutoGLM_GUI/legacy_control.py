@@ -83,6 +83,8 @@ async def legacy_touch(
 ) -> None:
     if not device_id:
         raise ValueError("device_id is required")
+    if device_id.startswith("rmq1:"):
+        raise ValueError("RMQ1 不支持 ADB 持续触摸接口")
     lock = _locks.setdefault(device_id, asyncio.Lock())
     async with lock:
         manager = PhoneAgentManager.get_instance()

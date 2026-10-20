@@ -225,7 +225,7 @@ test.describe('Docs screenshots', () => {
     await closeDialog(page);
 
     await shotDialog(page, 'device-add', async () => {
-      await page.getByRole('button', { name: '添加无线设备' }).click();
+      await page.getByRole('button', { name: '添加设备' }).click();
     });
     // Tabs within the add-device dialog. QR pairing renders inside the
     // "配对设备" tab, so it is captured separately below.

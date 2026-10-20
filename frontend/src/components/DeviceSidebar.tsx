@@ -29,6 +29,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { QRCodeSVG } from 'qrcode.react';
 import type { Device, MdnsDevice, RemoteDeviceInfo } from '../api';
+import { Rmq1Connect } from './Rmq1Connect';
 import {
   addRemoteDevice,
   cancelQRPairing,
@@ -786,7 +787,7 @@ export function DeviceSidebar({
               onValueChange={setActiveTab}
               className="w-full"
             >
-              <TabsList className="grid w-full grid-cols-3">
+              <TabsList className="grid w-full grid-cols-4">
                 <TabsTrigger value="direct">
                   {t.deviceSidebar.directConnectTab}
                 </TabsTrigger>
@@ -796,6 +797,7 @@ export function DeviceSidebar({
                 <TabsTrigger value="remote">
                   {t.deviceSidebar.remoteTab || '远程设备'}
                 </TabsTrigger>
+                <TabsTrigger value="rmq1">RMQ1 / iPhone</TabsTrigger>
               </TabsList>
 
               {/* Direct Connect Tab */}
@@ -1292,6 +1294,15 @@ export function DeviceSidebar({
                       : t.deviceSidebar.pairAndConnect}
                   </Button>
                 </div>
+              </TabsContent>
+
+              <TabsContent value="rmq1" className="space-y-4 mt-4">
+                <Rmq1Connect
+                  onConnected={() => {
+                    setShowManualConnect(false);
+                    onRefreshDevices?.();
+                  }}
+                />
               </TabsContent>
 
               {/* Remote Device Tab */}
