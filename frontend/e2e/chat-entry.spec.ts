@@ -172,3 +172,61 @@ entryTest(
     await expect(page.locator('textarea')).toBeVisible();
   }
 );
+
+entryTest(
+  'configures DeepSeek for vision and planning with user-provided keys',
+  async ({ page, chatUrl }) => {
+    await page.goto(chatUrl);
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.locator('#api_key').fill('');
+    await page.getByRole('button', { name: 'DeepSeek V4.1 Flash' }).click();
+    await expect(page.locator('#base_url')).toHaveValue(
+      'https://api.deepseek.com'
+    );
+    await expect(page.locator('#model_name')).toHaveValue('deepseek-flash');
+    await expect(page.locator('#api_key')).toHaveValue('');
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('#model_name')).toHaveValue('mock-glm-model');
+    await expect(page.locator('#api_key')).toHaveValue('mock-key');
+    await page.getByRole('button', { name: 'DeepSeek V4.1 Flash' }).click();
+    await page.locator('#api_key').fill('test-vision-key');
+    await page.getByRole('tab', { name: '决策模型', exact: true }).click();
+    await page.locator('#decision_api_key').fill('');
+    await page.getByRole('button', { name: 'DeepSeek V4.1 Flash' }).click();
+    await expect(page.locator('#decision_base_url')).toHaveValue(
+      'https://api.deepseek.com'
+    );
+    await expect(page.locator('#decision_model_name')).toHaveValue(
+      'deepseek-flash'
+    );
+    await expect(page.locator('#decision_api_key')).toHaveValue('');
+    await page.locator('#decision_api_key').fill('test-decision-key');
+    const saveRequest = page.waitForRequest(
+      request =>
+        request.url().endsWith('/api/config') && request.method() === 'POST'
+    );
+    await page.getByRole('button', { name: '保存配置', exact: true }).click();
+    expect((await saveRequest).postDataJSON()).toMatchObject({
+      base_url: 'https://api.deepseek.com',
+      model_name: 'deepseek-flash',
+      api_key: 'test-vision-key',
+      agent_type: 'gemini',
+      decision_base_url: 'https://api.deepseek.com',
+      decision_model_name: 'deepseek-flash',
+      decision_api_key: 'test-decision-key',
+    });
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.reload();
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('#model_name')).toHaveValue('deepseek-flash');
+    await expect(page.locator('#api_key')).toHaveValue('test-vision-key');
+    await page.getByRole('tab', { name: '决策模型', exact: true }).click();
+    await expect(page.locator('#decision_model_name')).toHaveValue(
+      'deepseek-flash'
+    );
+    await expect(page.locator('#decision_api_key')).toHaveValue(
+      'test-decision-key'
+    );
+  }
+);

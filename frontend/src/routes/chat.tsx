@@ -65,6 +65,15 @@ const VISION_PRESETS = [
     apiKeyUrl: 'https://www.modelscope.cn/my/myaccesstoken',
   },
   {
+    name: 'deepseek',
+    config: {
+      base_url: 'https://api.deepseek.com',
+      model_name: 'deepseek-flash',
+    },
+    agentType: 'gemini',
+    apiKeyUrl: 'https://platform.deepseek.com/api_keys',
+  },
+  {
     name: 'custom',
     config: {
       base_url: '',
@@ -140,6 +149,14 @@ const DECISION_PRESETS = [
       decision_model_name: 'Qwen/Qwen3-235B-A22B-Instruct-2507',
     },
     apiKeyUrl: 'https://www.modelscope.cn/my/myaccesstoken',
+  },
+  {
+    name: 'deepseek',
+    config: {
+      decision_base_url: 'https://api.deepseek.com',
+      decision_model_name: 'deepseek-flash',
+    },
+    apiKeyUrl: 'https://platform.deepseek.com/api_keys',
   },
   {
     name: 'custom',
@@ -559,6 +576,12 @@ export function ChatComponent() {
                               : {
                                   base_url: preset.config.base_url,
                                   model_name: preset.config.model_name,
+                                  ...('agentType' in preset
+                                    ? {
+                                        agent_type: preset.agentType,
+                                        agent_config_params: {},
+                                      }
+                                    : {}),
                                 }),
                           }))
                         }

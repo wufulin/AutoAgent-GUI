@@ -329,6 +329,10 @@ export const en = {
       name: 'ModelScope',
       description: 'API service provided by ModelScope community',
     },
+    deepseek: {
+      name: 'DeepSeek V4.1 Flash',
+      description: 'Official DeepSeek multimodal API for vision and planning',
+    },
     custom: {
       name: 'Custom Service',
       description: 'Self-hosted vLLM / SGLang services',

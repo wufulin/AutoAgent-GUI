@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from agents import Agent, Runner, SQLiteSession, function_tool
+from agents import Agent, ModelSettings, Runner, SQLiteSession, function_tool
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from openai import AsyncOpenAI
 
@@ -390,6 +390,12 @@ def _create_planner_agent(client: AsyncOpenAI) -> Agent[Any]:
         name="Planner",
         instructions=PLANNER_INSTRUCTIONS,
         model=model,
+        # Chat Completions sessions do not replay DeepSeek reasoning_content.
+        model_settings=ModelSettings(
+            extra_body={"thinking": {"type": "disabled"}}
+            if planner_model == "deepseek-flash"
+            else None
+        ),
         tools=[list_devices, chat],
     )
 
