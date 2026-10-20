@@ -1,5 +1,30 @@
 # AutoAgent-GUI 运行架构
 
+## RMQ1 iPhone 连接
+
+新增 `connection_type=rmq1`、`platform=ios`，在设备列表中与 USB、WiFi、
+HTTP Remote 并存。`DeviceManager` 只在登录、手机配置、HID 和首张画面检查通过后
+注册连接；ADB 轮询不移除 RMQ1，列表状态来自视频新鲜度。删除连接及服务停止时
+关闭视频线程并清除内存凭据。当前 RMQ1 专用面板支持预览与有界手动操作，
+`DeviceProtocol` 的 AI 初始化和旧 ADB 控制、scrcpy 入口显式拒绝 RMQ1。
+
+浏览器通过 `/api/rmq1/{probe,connect,disconnect,observe,gesture,recover}` 与后端交互。
+`RMQ1Transport` 只访问私有 IPv4 的 443 端口，在每次 TLS 连接发送密码或 cookie
+前核对叶证书 SHA-256，不跟随重定向。密码、cookie 不持久化。
+`RMQ1Device` 先建立持续的 `/api/ws` 会话启动按需推流，再从 `/api/media/ws`
+接收 H.264，使用 PyAV 解码，在内存保存最新 PNG；手势复用同一控制通道，
+空闲心跳与手势通过互斥锁串行读取状态和确认消息；
+前端单请求轮询，仅活动页面更新，按下到松开期间固定观察帧。
+
+手势绑定 session/frame/action ID，串行执行，在发送前校验 3 秒时效、尺寸、
+方向和 HID 绝对鼠标输出。坐标剔除黑边后按手机方向映射到 HID；释放后等待
+原控制通道 pong，回执范围仅为 `kvm_transport`。操作 ID 去重与结果保留在
+会话内，写入前持久化 0600 待确认标记以跨重启阻止未知动作重放。恢复必须由
+使用者核对手机并显式确认；不自动重连或切换输入通道。AI 入口不可用，因此
+这条路径由 RMQ1 自身的操作锁管理，不参与 Android 的流式触摸会话。
+
+配置、使用限制、故障恢复及物理验收要求见 [RMQ1 iPhone 接入](rmq1-iphone.md)。
+
 后端是 `AutoGLM_GUI/` 中的 Python/FastAPI 服务，HTTP API 与 Socket.IO 由 `server.py` 合并为 ASGI 应用；React 前端在 `frontend/`，桌面打包在 `electron/`。AI Agent 通过设备适配器执行任务；手动控制与任务共用 `PhoneAgentManager` 的设备占用边界。
 
 ## 应用布局与设备列表

@@ -140,3 +140,4 @@ class DeviceConnectionType(Enum):
     USB = "usb"
     WIFI = "wifi"
     REMOTE = "remote"
+    RMQ1 = "rmq1"

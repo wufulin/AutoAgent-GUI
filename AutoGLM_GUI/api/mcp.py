@@ -170,6 +170,9 @@ async def screenshot(device_id: str) -> ScreenshotResponse:
                 error="device_id is required",
             )
 
+        if device_id.startswith("rmq1:"):
+            raise ValueError("请使用 RMQ1 预览接口")
+
         device_manager = DeviceManager.get_instance()
         serial = device_manager.get_serial_by_device_id(device_id)
 

@@ -27,7 +27,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useTranslation } from '../lib/i18n-context';
-import { removeRemoteDevice, updateDeviceName } from '../api';
+import { removeRemoteDevice, rmq1Request, updateDeviceName } from '../api';
 import type { AgentStatus } from '../api';
 import type { ToastType } from './Toast';
 
@@ -68,7 +68,8 @@ export function DeviceCard({
   const isOnline = status === 'device';
   const isUsb = connectionType === 'usb';
   const isWifi = connectionType === 'wifi';
-  const isRemote = connectionType === 'remote';
+  const isRmq1 = connectionType === 'rmq1';
+  const isRemote = connectionType === 'remote' || isRmq1;
   const [loading, setLoading] = useState(false);
   const [showWifiConfirm, setShowWifiConfirm] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
@@ -271,7 +272,7 @@ export function DeviceCard({
                     className="px-1.5 py-0 text-[10px] border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"
                   >
                     <Server className="w-2.5 h-2.5 mr-1" />
-                    {t.deviceCard.remote || 'Remote'}
+                    {isRmq1 ? 'RMQ1 · iPhone' : t.deviceCard.remote || 'Remote'}
                   </Badge>
                 );
               } else if (isWifi) {
@@ -382,7 +383,12 @@ export function DeviceCard({
                   e.stopPropagation();
                   setLoading(true);
                   try {
-                    await removeRemoteDevice(serial);
+                    if (isRmq1) {
+                      await rmq1Request('disconnect', { device_id: serial });
+                      onNameUpdated?.();
+                    } else {
+                      await removeRemoteDevice(serial);
+                    }
                     // Refresh will happen via polling
                   } catch (error) {
                     console.error('Failed to remove remote device:', error);

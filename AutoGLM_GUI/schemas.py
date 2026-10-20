@@ -259,6 +259,7 @@ class DeviceResponse(BaseModel):
     model: str
     status: str
     connection_type: str
+    platform: str = "android"
     state: str
     is_available_only: bool
     display_name: str | None = None

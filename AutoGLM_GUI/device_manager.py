@@ -8,7 +8,10 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
+
+if TYPE_CHECKING:
+    from AutoGLM_GUI.devices.rmq1 import RMQ1Device
 
 from typing_extensions import TypedDict
 
@@ -37,6 +40,7 @@ class ManagedDevicePayload(TypedDict):
     connection_type: str
     state: str
     is_available_only: bool
+    platform: str
 
 
 class RemoteDeviceConfig(TypedDict):
@@ -132,6 +136,7 @@ class ManagedDevice:
     # Device metadata
     model: str | None = None
     display_name: str | None = None  # User-defined custom name
+    platform: str = "android"
 
     # Device-level state
     state: DeviceState = DeviceState.ONLINE
@@ -192,6 +197,7 @@ class ManagedDevice:
             "connection_type": self.connection_type.value,
             "state": self.state.value,
             "is_available_only": self.state == DeviceState.AVAILABLE_MDNS,
+            "platform": self.platform,
         }
 
 
@@ -290,6 +296,8 @@ class DeviceManager:
         self._enable_mdns_discovery: bool = True  # Feature toggle
 
         self._remote_devices: dict[str, DeviceProtocol] = {}
+        self._rmq1_devices: dict[str, RMQ1Device] = {}
+        self._rmq1_connect_lock = threading.Lock()
         self._remote_device_configs: dict[str, RemoteDeviceConfig] = {}
 
         # ADB Keyboard setup state (process-local, best-effort)
@@ -329,6 +337,9 @@ class DeviceManager:
 
     def stop_polling(self) -> None:
         """Stop background polling thread (graceful shutdown)."""
+        with self._rmq1_connect_lock:
+            for device in self._rmq1_devices.values():
+                device.close()
         if not self._poll_thread:
             return
 
@@ -345,6 +356,11 @@ class DeviceManager:
     def get_devices(self) -> list[ManagedDevice]:
         """Get all cached devices (connected + available mDNS)."""
         with self._devices_lock:
+            for serial, rmq1 in self._rmq1_devices.items():
+                managed = self._devices[serial]
+                online = rmq1.online
+                managed.state = DeviceState.ONLINE if online else DeviceState.OFFLINE
+                managed.primary_connection.status = "device" if online else "offline"
             # Merge connected and mDNS devices
             all_devices = list(self._devices.values())
 
@@ -510,7 +526,8 @@ class DeviceManager:
                 s
                 for s in removed_serials
                 if s not in self._devices
-                or self._devices[s].connection_type != DeviceConnectionType.REMOTE
+                or self._devices[s].connection_type
+                not in (DeviceConnectionType.REMOTE, DeviceConnectionType.RMQ1)
             }
             existing_serials = current_serials & previous_serials
 
@@ -862,6 +879,62 @@ class DeviceManager:
             connection_address,
         )
 
+    def add_rmq1_device(
+        self, host: str, fingerprint: str, username: str, password: str
+    ) -> str:
+        """Connect one local RMQ1; register only after decoding a real frame."""
+        from AutoGLM_GUI.devices.rmq1 import RMQ1Device
+        from AutoGLM_GUI.devices.rmq1_transport import RMQ1Error, RMQ1Transport
+
+        transport = RMQ1Transport(host, fingerprint)
+        serial = f"rmq1:{transport.host}"
+        with self._rmq1_connect_lock:
+            with self._devices_lock:
+                if serial in self._devices:
+                    raise RMQ1Error("此 RMQ1 已连接，请先断开旧连接")
+            device = RMQ1Device(transport, self._metadata_manager.storage_dir)
+            try:
+                transport.login(username, password)
+                device.start()
+                with self._devices_lock:
+                    self._rmq1_devices[serial] = device
+                    self._devices[serial] = ManagedDevice(
+                        serial=serial,
+                        connections=[
+                            DeviceConnection(
+                                device_id=serial,
+                                connection_type=DeviceConnectionType.RMQ1,
+                                status="device",
+                            )
+                        ],
+                        model="iPhone · RMQ1",
+                        platform="ios",
+                        display_name=self._metadata_manager.get_display_name(serial),
+                    )
+                    self._device_id_to_serial[serial] = serial
+            except BaseException:
+                device.close()
+                raise
+        return serial
+
+    def get_rmq1_device(self, device_id: str) -> RMQ1Device:
+        from AutoGLM_GUI.devices.rmq1_transport import RMQ1Error
+
+        with self._devices_lock:
+            device = self._rmq1_devices.get(device_id)
+            if not device:
+                raise RMQ1Error("RMQ1 未连接")
+            return device
+
+    def remove_rmq1_device(self, device_id: str) -> None:
+        with self._rmq1_connect_lock:
+            device = self.get_rmq1_device(device_id)
+            device.close()
+            with self._devices_lock:
+                self._rmq1_devices.pop(device_id, None)
+                self._devices.pop(device_id, None)
+                self._device_id_to_serial.pop(device_id, None)
+
     def discover_remote_devices(
         self, base_url: str, timeout: int = 5
     ) -> tuple[bool, str, list[RemoteDiscoveryDevice]]:
@@ -1074,6 +1147,8 @@ class DeviceManager:
             >>> device = manager.get_device_protocol("192.168.1.100:5555")
             >>> screenshot = device.get_screenshot()  # 不关心是 ADB 还是 Remote
         """
+        if device_id.startswith("rmq1:"):
+            raise ValueError("RMQ1 iPhone 当前仅支持预览和手动操作，暂不支持 AI 任务")
         with self._devices_lock:
             # 1. 查找设备元数据
             managed = self.get_device_by_device_id(device_id)
@@ -1108,6 +1183,8 @@ class DeviceManager:
 
         异步 agent 统一使用此入口，避免在事件循环中调用同步 DeviceProtocol。
         """
+        if device_id.startswith("rmq1:"):
+            raise ValueError("RMQ1 iPhone 当前仅支持预览和手动操作，暂不支持 AI 任务")
         with self._devices_lock:
             managed = self.get_device_by_device_id(device_id)
             if not managed:

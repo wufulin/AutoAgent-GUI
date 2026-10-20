@@ -27,6 +27,8 @@ async def control_tap(request: TapRequest) -> TapResponse:
         if not request.device_id:
             return TapResponse(success=False, error="device_id is required")
 
+        if request.device_id.startswith("rmq1:"):
+            raise ValueError("请使用 RMQ1 画面绑定的手动控制接口")
         device = ADBDevice(request.device_id)
         await manual_operation(
             request.device_id, device.tap, x=request.x, y=request.y, delay=request.delay
@@ -44,6 +46,8 @@ async def control_swipe(request: SwipeRequest) -> SwipeResponse:
         if not request.device_id:
             return SwipeResponse(success=False, error="device_id is required")
 
+        if request.device_id.startswith("rmq1:"):
+            raise ValueError("请使用 RMQ1 画面绑定的手动控制接口")
         device = ADBDevice(request.device_id)
         await manual_operation(
             request.device_id,

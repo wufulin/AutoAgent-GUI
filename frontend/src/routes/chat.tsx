@@ -10,6 +10,7 @@ import {
   type ConfigSaveRequest,
 } from '../api';
 import { DeviceSidebar } from '../components/DeviceSidebar';
+import { Rmq1Panel } from '../components/Rmq1Panel';
 import { DevicePanel } from '../components/DevicePanel';
 import { ChatKitPanel } from '../components/ChatKitPanel';
 import { GroupManageDialog } from '../components/GroupManageDialog';
@@ -1261,7 +1262,9 @@ export function ChatComponent() {
               key={currentDevice.serial}
               className="w-full max-w-7xl flex items-stretch justify-center min-h-0"
             >
-              {chatMode === 'chatkit' ? (
+              {currentDevice.connection_type === 'rmq1' ? (
+                <Rmq1Panel deviceId={currentDevice.id} />
+              ) : chatMode === 'chatkit' ? (
                 <div className="w-full flex items-stretch justify-center">
                   {config &&
                   (!config.decision_base_url || !config.decision_model_name) ? (

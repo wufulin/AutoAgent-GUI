@@ -33,6 +33,7 @@ from . import (
     mcp,
     media,
     metrics,
+    rmq1,
     scheduled_tasks,
     terminal,
     tasks,
@@ -199,6 +200,7 @@ def create_app() -> FastAPI:
     app.include_router(layered_agent.router)
     app.include_router(devices.router)
     app.include_router(control.router)
+    app.include_router(rmq1.router)
     app.include_router(media.router)
     app.include_router(metrics.router)
     app.include_router(scheduled_tasks.router)

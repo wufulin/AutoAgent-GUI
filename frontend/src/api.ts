@@ -1390,3 +1390,30 @@ export async function assignDeviceToGroup(
   );
   return res.data;
 }
+
+/** RMQ1 credentials and frame data are never stored in browser storage. */
+export async function rmq1Request<T = { success: boolean }>(
+  operation:
+    | 'probe'
+    | 'connect'
+    | 'disconnect'
+    | 'observe'
+    | 'gesture'
+    | 'recover',
+  body: object
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(
+    () => controller.abort(),
+    operation === 'connect' ? 45000 : 15000
+  );
+  try {
+    const response = await axios.post<T>(`/api/rmq1/${operation}`, body, {
+      fetch: (input, init) =>
+        fetch(input, { ...init, signal: controller.signal }),
+    });
+    return response.data;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
