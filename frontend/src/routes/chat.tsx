@@ -1252,9 +1252,6 @@ export function ChatComponent() {
                 <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-2">
                   {t.chat.welcomeTitle}
                 </h3>
-                <p className="text-slate-500 dark:text-slate-400">
-                  {t.chat.connectDevice}
-                </p>
               </div>
             </div>
           ) : (

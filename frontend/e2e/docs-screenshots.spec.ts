@@ -232,7 +232,7 @@ test.describe('Docs screenshots', () => {
     for (const [tabName, file] of [
       ['配对设备', 'device-add-pair'],
       ['远程设备', 'device-add-remote'],
-      ['直接连接', 'device-add-direct'],
+      ['无线连接', 'device-add-direct'],
     ] as const) {
       await shot(page, file, async () => {
         await page.getByRole('tab', { name: new RegExp(tabName) }).click();
