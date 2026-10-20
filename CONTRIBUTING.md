@@ -47,7 +47,7 @@
 确保你的环境中已安装：
 
 - **Python 3.11+**
-- **Node.js 18+** 和 **pnpm**
+- **Node.js 22.12+（或 20.19+）** 和 **pnpm**
 - **uv**（Python 包管理器）- [安装教程](https://docs.astral.sh/uv/getting-started/installation/)
 - **ADB** (Android Debug Bridge) - 需要添加到系统 PATH
 
@@ -102,6 +102,24 @@ I'd like to work on this
 ## 💻 本地开发
 
 ### 1. 安装依赖
+
+**一键准备新 checkout / worktree**：
+```bash
+uv run --no-project python scripts/setup.py
+```
+
+提前安装 Python 3.11+、Node.js 22.12+（或 20.19+）、uv 和 pnpm。
+命令按锁文件安装当前目录的 Python 开发依赖、前端和 Electron 依赖，
+构建前端并复制到后端静态目录；可重复运行，失败后修复原因再重跑。
+依赖和 Electron 二进制首次下载需要网络，每条安装/构建命令最多等待 10 分钟。
+
+仓库的 `.codex/environments/environment.toml` 已配置此 setup 命令。
+在 Codex 中创建 worktree 时选择该本地环境，即可自动执行准备步骤。
+手动运行 `git worktree add` 后需自行运行上面的命令。
+setup 不启动服务，也不复制密钥或本机配置。ADB 需在控制 Android 设备前另行安装；
+浏览器 E2E 需要额外执行 `pnpm --dir frontend exec playwright install chromium`。
+
+也可以分别安装依赖：
 
 **后端依赖**：
 ```bash

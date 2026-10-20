@@ -1,5 +1,17 @@
 # AutoAgent-GUI 运行架构
 
+## Worktree 开发环境
+
+`.codex/environments/environment.toml` 的 setup 入口调用
+`uv run --no-project python scripts/setup.py`，在 Codex 为新会话创建 worktree
+且选择此本地环境时自动执行。脚本定位自身所属 checkout，用 `uv sync --locked --dev`
+建立独立 `.venv`，再为 `frontend/` 与 `electron/` 执行锁文件安装。
+前端构建复用 `scripts/build.py` 的版本注入与静态文件复制逻辑，产物写入当前
+worktree 的 `frontend/dist/` 和 `AutoGLM_GUI/static/`，不共享其他 checkout 的依赖目录。
+每条外部命令超时为 10 分钟，任一步失败即停止，可修复后重跑；不自动启动服务、
+安装 ADB/浏览器或复制用户配置。移除环境的 setup 配置即可停用自动准备，
+依赖仍可按 [贡献指南](../CONTRIBUTING.md) 手动安装。
+
 ## AutoMobile 界面与 USB 设备发现
 
 网页侧栏、欢迎页和浏览器标题使用 AutoMobile，导航 Logo 与网页图标采用同一套
