@@ -106,6 +106,7 @@ class AsyncGLMAgent(AsyncAgentBase, AsyncAgent):
                     "success": False,
                     "finished": True,
                     "message": f"Device error: {e}",
+                    "stop_reason": "device_error",
                 },
             }
             return
@@ -234,6 +235,7 @@ class AsyncGLMAgent(AsyncAgentBase, AsyncAgent):
                     "finished": True,
                     "message": message,
                     "error_details": error_details,
+                    "stop_reason": "model_error",
                 },
             }
             return
@@ -247,9 +249,22 @@ class AsyncGLMAgent(AsyncAgentBase, AsyncAgent):
             try:
                 action = self.parser.parse(action_str)
             except ValueError as e:
-                if self.agent_config.verbose:
-                    logger.warning(f"Failed to parse action: {e}, treating as finish")
-                action = {"_metadata": "finish", "message": action_str}
+                self._context[-1] = MessageBuilder.remove_images_from_message(
+                    self._context[-1]
+                )
+                yield {
+                    "type": "step",
+                    "data": {
+                        "step": self._step_count,
+                        "thinking": thinking,
+                        "action": None,
+                        "success": False,
+                        "finished": True,
+                        "stop_reason": "parse_error",
+                        "message": f"Invalid model action: {e}",
+                    },
+                }
+                return
 
         if self.agent_config.verbose:
             msgs = get_messages(self.agent_config.lang)

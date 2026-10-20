@@ -10,6 +10,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { ResultStatusBadge } from '../components/ResultStatusBadge';
 import {
   Select,
   SelectContent,
@@ -36,8 +37,6 @@ import {
 import {
   Loader2,
   Trash2,
-  CheckCircle,
-  XCircle,
   Clock,
   User,
   Bot,
@@ -350,23 +349,10 @@ export function HistoryComponent() {
                     {/* Metadata row */}
                     <div className="flex flex-wrap items-center gap-2 text-xs">
                       {/* Success/Failed badge */}
-                      {record.success ? (
-                        <Badge
-                          variant="outline"
-                          className="text-green-600 border-green-300 dark:text-green-400 dark:border-green-700"
-                        >
-                          <CheckCircle className="w-3 h-3 mr-1" />
-                          {t.historyPage.success}
-                        </Badge>
-                      ) : (
-                        <Badge
-                          variant="outline"
-                          className="text-red-600 border-red-300 dark:text-red-400 dark:border-red-700"
-                        >
-                          <XCircle className="w-3 h-3 mr-1" />
-                          {t.historyPage.failed}
-                        </Badge>
-                      )}
+                      <ResultStatusBadge
+                        status={record.result_status}
+                        success={record.success}
+                      />
 
                       {/* Source badge */}
                       <Badge className={getSourceColor(record.source)}>
@@ -492,10 +478,11 @@ export function HistoryComponent() {
         <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
           <DialogHeader className="flex-shrink-0">
             <DialogTitle className="flex items-center gap-2">
-              {selectedRecord?.success ? (
-                <CheckCircle className="w-5 h-5 text-green-500" />
-              ) : (
-                <XCircle className="w-5 h-5 text-red-500" />
+              {selectedRecord && (
+                <ResultStatusBadge
+                  status={selectedRecord.result_status}
+                  success={selectedRecord.success}
+                />
               )}
               {t.historyPage.detailTitle || '对话详情'}
             </DialogTitle>
@@ -635,25 +622,19 @@ export function HistoryComponent() {
                 </div>
 
                 {/* Final result */}
-                <div
-                  className={`p-3 rounded-lg ${
-                    selectedRecord.success
-                      ? 'bg-green-50 dark:bg-green-900/20'
-                      : 'bg-red-50 dark:bg-red-900/20'
-                  }`}
-                >
-                  <p
-                    className={`text-xs font-medium mb-1 ${
-                      selectedRecord.success
-                        ? 'text-green-600 dark:text-green-400'
-                        : 'text-red-600 dark:text-red-400'
-                    }`}
-                  >
-                    {t.historyPage.resultLabel || '结果'}
-                  </p>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-900 space-y-2">
+                  <ResultStatusBadge
+                    status={selectedRecord.result_status}
+                    success={selectedRecord.success}
+                  />
                   <p className="text-sm text-slate-900 dark:text-slate-100">
                     {selectedRecord.final_message}
                   </p>
+                  {selectedRecord.stop_reason && (
+                    <p className="text-xs text-slate-500">
+                      {t.chatkit.stopReason}: {selectedRecord.stop_reason}
+                    </p>
+                  )}
                 </div>
 
                 {/* Metadata */}

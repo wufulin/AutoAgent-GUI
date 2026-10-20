@@ -8,6 +8,12 @@ test('refresh discovers a USB device without wireless pairing', async ({
     localStorage.setItem('locale', 'zh');
     localStorage.setItem('theme', 'light');
   });
+  // Device discovery must not depend on model settings saved by other tests.
+  await page.route('**/api/config', route =>
+    route.fulfill({
+      json: { base_url: '', model_name: '', api_key: '', source: 'fixture' },
+    })
+  );
 
   let devices: Device[] = [];
   let wirelessRequests = 0;
@@ -27,6 +33,8 @@ test('refresh discovers a USB device without wireless pairing', async ({
   });
 
   await page.goto('/chat');
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(page.getByRole('dialog')).not.toBeVisible();
   await expect(page.getByText('未连接设备', { exact: true })).toBeVisible();
   // Freeze automatic polling so only the refresh button can discover the phone.
   await page.clock.pauseAt(new Date());

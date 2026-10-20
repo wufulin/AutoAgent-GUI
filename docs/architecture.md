@@ -65,38 +65,18 @@ HTTP Remote 并存。`DeviceManager` 只在登录、手机配置、HID 和首张
 
 ## 统一聊天入口与兼容边界
 
-聊天页 `/chat` 默认使用分层代理：决策模型规划任务，通过 `layered_agent_service.chat` 调用共用手机代理执行子任务。每次子任务重置执行上下文并限制为 5 步，规划层会话由 SQLiteSession 保留。直接执行继续使用 `TaskManager._execute_classic_chat`，不删除手机代理、模型适配、图片输入或人工接管后继续执行的原有路径。
+聊天页 `/chat` 默认使用分层代理：决策模型通过 `execute_subtask` 提交目标、完成条件、约束及步数预算，由 `subtasks.py` 管理 task 内的有状态执行和完成验收。Planner 会话仍由 SQLiteSession 管理，手机执行器按 task 隔离。直接执行继续使用 `TaskManager._execute_classic_chat`，保留图片输入及原有接管后继续路径。
 
-分层调用保留视觉适配器自身的输出协议，在其系统提示词后追加目标确认、误点即停止
-和 5 轮限制；重置时重新读取当前配置，调用结束、异常或取消后恢复原配置。
-function calling 模型继续调用工具，GLM/MAI/Qwen 保留各自的动作格式。
-共用重置逻辑的 MCP `chat` 同步采用保留原协议的约束追加方式，避免重置修复后
-把旧 XML 提示词强加给 function calling 模型。
-外部执行适配器通过任务文本接收同样约束。步数包含模型的完成报告轮次；
-`ELEMENT_NOT_FOUND`、`WRONG_TARGET`、`STEP_LIMIT_EXCEEDED` 和设备执行失败
-都返回子任务 `success=false`，不会把操作已执行等同于目标达成。
+分层执行在视觉适配器自身的系统提示词后追加目标确认、坐标单位、误点即停止
+和禁止盲目重放等约束。Gemini 保留 function calling 协议，GLM/Qwen 保留各自
+动作格式；重置时重新读取当前提示词配置。分层子任务采用下面定义的动态步数预算，
+同子任务续跑保留上下文，任务结束销毁局部执行器。预算包含模型的完成报告轮次。
+`ELEMENT_NOT_FOUND`、`WRONG_TARGET`、`SCREEN_CHANGED` 等明确失败不能被普通
+finish 报告或后续 Planner 文字改判成功。
 
-每次规划运行通过 SDK 的 run context 持有按设备隔离的最近 3 个子任务摘要，
-包含指令、结果与最多 5 个动作；不保留图片、完整模型推理或输入文本参数。
-重试时摘要作为历史数据送入 Phone Agent，要求重新观察，禁止自动重放旧坐标。
-摘要只在当前任务内存在，不跨任务或后端重启恢复，也不改变规划会话的持久化方式。
-
-分层内部回放写入 `logs/runs/<trace_id>/replay.jsonl` 的 `phone_agent` 事件，
-通过唯一 `call_id` 和子任务内部 `index` 关联；`event_seq` 在每次调用内编号。
-Gemini 通用 function calling 适配器记录模型实际看到的 `observation`、
-模型选定动作、`pre_action` 和 `post_action` 截图及执行结果，保存图像宽高。
-推理期间尺寸改变会停止而不点击。其他适配器记录流式步骤结果，不宣称已有同等
-截图覆盖。后续截图失败不会重放已执行的操作；取消时保留已取得的画面。
-截图只能证明采集时的画面，不等于语义目标验证，也不排除推理期间同尺寸的 UI 变化。
-
-内部回放复用 `AUTOGLM_TRACE_ENABLED`、`AUTOGLM_TRACE_REPLAY_ENABLED`、
-`AUTOGLM_TRACE_CAPTURE_SCREENSHOT=artifact|off|on_error` 和
-`AUTOGLM_TRACE_CAPTURE_ACTION`。默认 `artifact`；`on_error` 在子任务失败或取消时
-保留该调用的截图，单调用缓冲最多 20 帧，敏感截图不保存。文件名包含调用 ID，
-避免不同子任务的 step 1 互相覆盖；图片以 artifact 引用保存，不写入模型返回文本
-或任务数据库。复用现有历史删除/回放删除机制，不新增数据库迁移。
-回滚需停止活动任务后切回旧后端；新回放事件是附加记录，旧事件格式保持兼容。
-这些回归测试使用模拟设备，真实模型的城市入口定位成功率仍需单独验收。
+独立的 MCP `chat` 保留每次 5 步、重置及恢复原配置的兼容行为，也追加保留原协议的
+约束；它没有分层 `execute_subtask` 的 checkpoint 或独立完成验收。分层 Planner 的
+同名兼容工具则委托 `execute_subtask`，采用已验证子任务的契约。
 
 顶部不再提供双模式切换。设备栏「设置 → 高级设置 → 聊天执行方式」保留「自动规划（默认）」和「直接执行」，保存后应用，取消或关闭放弃未保存的选择。选择仅记录在当前聊天 URL；刷新沿用，新的无模式链接仍默认自动规划。路由以 URL 为模式来源，继续识别旧 `mode=classic` 和 `mode=chatkit`，不迁移或删除旧会话及历史。
 
@@ -106,7 +86,54 @@ Gemini 通用 function calling 适配器记录模型实际看到的 `observation
 
 后端会话 API、MCP 的 `mode` 缺省值及定时任务 `execution_mode` 保持原有兼容语义，不因聊天 UI 选择发生迁移。两种执行方式继续按原来的独立会话键恢复。配置服务请求失败时保留现有配置对话框处理方式，不自动切换执行方式。
 
-本次调整不改变执行算法或手机控制协议。浏览器回归验证默认分层会话、保存/取消、刷新恢复、旧链接、缺少决策模型的提示与直接执行入口；原有直接执行任务、图片输入及接管恢复测试继续运行。回滚前端版本可恢复顶部切换，不需数据库迁移。上述测试不代表两个模式的真机成功率或性能对比。
+聊天入口的布局调整不改变手机控制协议。浏览器回归验证默认分层会话、保存/取消、刷新恢复、旧链接、缺少决策模型的提示与直接执行入口；原有直接执行任务、图片输入及接管恢复测试继续运行。回滚前端版本可恢复顶部切换，不需数据库迁移。上述测试不代表两个模式的真机成功率或性能对比。
+
+## 已验证子任务与执行器范围
+
+当前内置执行器只保留 GLM（`glm-async`，兼容 `async-glm`，原始 `glm` 配置自动规范化）、Qwen（`qwen`）和
+General Vision（`gemini`，兼容 `general-vision`）。MAI、DroidRun、Midscene 的代码、专用参数 UI、依赖和打包入口移除。旧配置仍按原类型读取，`GET /api/config` 返回新增的 `agent_type_supported=false`，不会回退默认执行器；保存和初始化拒绝旧类型。用户改选受支持类型后清空旧 `agent_config_params`，历史中的旧类型标签与字符串结果仍能读取。配置保存和删除先在 manager 建立原子更新边界：已有任务、租约或人工操作时返回 409 且不写盘；更新期间拒绝新的设备获取。保存、环境同步及空闲执行器销毁完成后解除更新边界；删除保留原有语义，不额外同步环境或重建执行器。
+
+`execute_subtask(device_id, goal, success_criteria, constraints, max_steps=10, checkpoint=None)`
+按可验证的界面状态划分子目标，每段预算为 1–20 步，整个 task 的累计步数沿用
+`default_max_steps`，Planner 轮数沿用 `layered_max_turns`。返回七种状态：
+`completed / partial / blocked / failed / cancelled / needs_user / unknown`。
+兼容包保留 `result / steps / success`，result 增加目标、状态、停止原因、累计步数、验收摘要与续跑句柄；success 仅 completed 为真。进度事件区分 executing 与 verifying。
+
+模型 `finish` 只申请完成。系统继续持有设备并取得新截图，复用执行器视觉模型进行只读、无动作工具的验收；逐项返回 `met / unmet / unknown` 及理由、可观察事实、时间和截图 SHA-256。
+所有条件满足才能 completed；明确未满足返回 partial，验收不可用或不可判定则停止。
+这张验收截图只在内存参与判断，不加入工具结果或历史，也不新增图片读取 API；
+hash 不能用于回看图片。下述执行阶段的回放截图沿用原有 trace 采集策略，与这张独立验收截图分开处理。
+
+partial 仅用于本段预算耗尽或验收明确未满足，附当前 task 内的一次性 checkpoint。
+续跑校验目标、条件、约束及设备一致，保留执行器上下文并注入验收差异；旧句柄消费后失效。
+未完成子任务须先续跑，不能跳过后新建子任务。checkpoint 不跨用户轮次、task 或进程恢复；取消、结束、模型配置变化后不可复用。整体成功要求至少一个子任务，且所有已发起子任务的最新状态均 completed；其他终止状态不能被 Planner 最终文字覆盖。这是子目标聚合验收，不保证 Planner 没有遗漏原始目标。
+
+当前 task 的 SDK run context 另保留按设备隔离、有界的近期执行摘要，用于后续子目标
+了解已有操作。摘要包含目标、结果与动作几何，不复制图片、完整模型推理或输入文本
+参数；同一子任务的续跑由原执行上下文及验收差异支持。摘要和旧坐标只作为历史数据，
+执行器必须重新观察当前画面，不能自动重放。它们不跨 task 或后端重启恢复，
+也不改变 Planner 会话的持久化方式。
+
+设备租约在 task 首次使用设备时取得，贯穿执行、验收与 partial 等待；同物理设备的其他 Agent context 与人工输入不能写入。取消只命中所属 task，先停止新动作，等待在途本地 ADB / 远端操作结算后释放租约；无法确认则保留设备隔离，不重放未知动作。task 结束销毁局部执行器、清理 checkpoint，Planner 对话与历史继续保留。
+
+分层内部执行回放继续写入 `logs/runs/<trace_id>/replay.jsonl` 的 `phone_agent`
+事件，以独立 `call_id` 关联每段执行及其步骤 `index`；`event_seq` 在每段内编号。
+Gemini 通用 function calling 适配器记录模型实际看到的 `observation`、模型选定
+动作、`pre_action` 和 `post_action` 截图及执行结果，保存图像宽高。推理期间尺寸
+改变会停止而不点击。其他适配器记录流式步骤结果，不宣称已有同等截图覆盖。
+后续截图失败不会重放已执行的操作；取消时保留已取得的证据。执行截图只证明采集
+时的画面，操作返回成功也不等于目标通过验收；尺寸检查不排除同尺寸的 UI 变化。
+
+回放复用 `AUTOGLM_TRACE_ENABLED`、`AUTOGLM_TRACE_REPLAY_ENABLED`、
+`AUTOGLM_TRACE_CAPTURE_SCREENSHOT=artifact|off|on_error` 和
+`AUTOGLM_TRACE_CAPTURE_ACTION`。默认 `artifact`；`on_error` 在该段未完成或取消时
+保留其截图缓冲，最多 60 帧（20 步、每步最多 3 帧），超出时保留最新证据，
+不会在结果确定前直接落盘；敏感截图不保存。文件名包含调用 ID，避免不同子任务或续跑段
+互相覆盖；图片以 artifact 引用保存在回放文件，不把 base64 写入模型返回文本或
+任务数据库。沿用历史删除/回放删除机制，旧回放事件格式保持兼容。回归使用模拟
+设备，真实模型的目标定位准确率和执行效果仍需单独验收。
+
+本版不增加技能库、UI tree/OCR 路由或持久化动作账本。无需数据库结构迁移，状态与验收摘要随现有任务事件保存。升级/回滚须先停止任务并核对设备空闲，成套更新前后端；进程内 checkpoint 会失效。回滚到旧版本才能重新使用被移除的执行器，清空的旧参数需从升级前保存的配置恢复。确定性回归覆盖状态、验收、续跑、互斥与取消边界，真实成功率、误报率、token 与耗时改进仍需真机对照实验。
 
 ## Android 预览与手动控制
 

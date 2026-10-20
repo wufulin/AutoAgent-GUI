@@ -599,6 +599,88 @@ def test_history_converts_layered_tool_events_to_messages(
     assert data["trace_summary"]["llm_duration_ms"] == 12000
 
 
+@pytest.mark.parametrize(
+    ("status", "subtask_status", "terminal_status", "expected"),
+    [
+        ("SUCCEEDED", "completed", "completed", "completed"),
+        ("FAILED", "needs_user", "needs_user", "needs_user"),
+        ("FAILED", "unknown", None, "unknown"),
+        ("FAILED", "partial", "blocked", "blocked"),
+        ("FAILED", "completed", None, "failed"),
+        ("CANCELLED", "partial", None, "cancelled"),
+    ],
+)
+def test_history_preserves_verified_subtask_outcomes(
+    client: TestClient,
+    fake_task_store: FakeTaskStore,
+    status: str,
+    subtask_status: str,
+    terminal_status: str | None,
+    expected: str,
+) -> None:
+    task_id = "verified-layered"
+    fake_task_store.tasks[task_id] = {
+        "id": task_id,
+        "source": "chat",
+        "executor_key": "layered_chat",
+        "session_id": "session-verified",
+        "device_id": "dev-1",
+        "device_serial": "device-1",
+        "status": status,
+        "input_text": "打开设置",
+        "final_message": "已检查当前界面",
+        "error_message": None,
+        "stop_reason": "verification_result",
+        "step_count": 7,
+        "created_at": "2026-01-03T09:00:00",
+        "started_at": "2026-01-03T09:00:01",
+        "finished_at": "2026-01-03T09:00:03",
+    }
+    result = {
+        "subtask_id": "subtask-1",
+        "status": subtask_status,
+        "goal": "打开设置",
+        "steps": 2,
+        "total_steps": 7,
+        "verification": {
+            "criteria": [{"criterion": "设置页面", "verdict": "met", "reason": "标题"}],
+            "facts": ["设置页面"],
+            "observed_at": "2026-01-03T09:00:02",
+        },
+    }
+    fake_task_store.events[task_id] = [
+        {
+            "task_id": task_id,
+            "seq": 1,
+            "event_type": "tool_result",
+            "role": "assistant",
+            "payload": {"tool_name": "execute_subtask", "result": result},
+            "created_at": "2026-01-03T09:00:02",
+        },
+        {
+            "task_id": task_id,
+            "seq": 2,
+            "event_type": "done" if status == "SUCCEEDED" else "error",
+            "role": "assistant",
+            "payload": {"result_status": terminal_status},
+            "created_at": "2026-01-03T09:00:03",
+        },
+    ]
+    response = client.get(f"/api/history/device-1/{task_id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["result_status"] == expected
+    assert data["stop_reason"] == "verification_result"
+    assert data["success"] is (status == "SUCCEEDED")
+    assert '"subtask_id": "subtask-1"' in data["messages"][1]["content"]
+
+
+def test_legacy_history_does_not_claim_verified_completion(client: TestClient) -> None:
+    response = client.get("/api/history/device-1/rec-1")
+    assert response.status_code == 200
+    assert response.json()["result_status"] is None
+
+
 def test_list_history_validates_limit_and_offset(client: TestClient) -> None:
     limit_response = client.get("/api/history/device-1", params={"limit": 101})
     assert limit_response.status_code == 400

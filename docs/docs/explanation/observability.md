@@ -23,7 +23,7 @@ AutoGLM-GUI 内置一套轻量的执行追踪（trace）系统，用来回答「
 - **模型调用**：经典 Agent 发 `step.llm`；分层规划层的流式调用发 `model.call` 与 `layered.planner.*`。
 - **工具调用**：分层规划层发 `tool.call` 和 `tool.result`；Gemini 的 Function Calling 发 `tool.call`。
 - **设备 / ADB 调用**：设备封装与底层 ADB 操作发 `device.*` 与 `adb.*`。
-- **记忆与持久化**：MAI 轨迹记忆发 `memory.read` / `memory.write`；分层会话发 `memory.*`；任务/历史写入发 `task_store.*` / `history.*`。
+- **记忆与持久化**：分层会话发 `memory.*`；任务/历史写入发 `task_store.*` / `history.*`。
 - **任务汇总**：任务结束追加一条 `trace_summary` 事件，并据同一份 trace 数据记录 Prometheus 时延指标。
 
 ## 怎么用来排障

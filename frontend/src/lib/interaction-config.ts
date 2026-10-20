@@ -6,12 +6,9 @@ export interface InteractionConfig {
 const defaultInteractionConfig: InteractionConfig = {
   actions: ['Interact', 'Take_over'],
   agentOverrides: {
-    mai: ['Interact', 'Take_over', 'Ask_User'],
     gemini: ['Interact', 'Take_over'],
     'glm-async': ['Interact', 'Take_over'],
     qwen: ['Interact', 'Take_over'],
-    droidrun: ['Interact', 'Take_over'],
-    midscene: ['Interact', 'Take_over'],
   },
 };
 

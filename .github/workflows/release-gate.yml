@@ -32,12 +32,6 @@ jobs:
         with:
           frozen: "true"
 
-      # Do not install the droidrun extra here. Those packages pull
-      # arize-phoenix / llama-index, and phoenix's import graph currently
-      # crashes pytest during plugin autoload
-      # (`ModuleNotFoundError: phoenix.evals.models`). No release_gate test
-      # imports the real droidrun package; adapter tests mock it.
-
       - name: Backend lint (check-only)
         run: |
           uv run python scripts/lint.py --backend --check-only

@@ -317,6 +317,7 @@ class TestInteractionActionsIntegration:
             "steps": 1,
             "success": True,
             "stop_reason": "takeover",
+            "status": "needs_user",
         }
         assert agent.step_count == 1
         assert agent.prepared_tasks == ["打开飞书"]
@@ -333,6 +334,8 @@ class TestInteractionActionsIntegration:
             "message": "done",
             "steps": 2,
             "success": True,
+            "status": "completion_requested",
+            "stop_reason": "model_finished",
         }
         assert agent.step_count == 2
         assert agent.prepared_tasks == ["打开飞书"]

@@ -19,7 +19,7 @@ sidebar_position: 50
 
 ## 应该选哪个 Agent 类型？
 
-拿不准就用默认的 GLM Agent。需要参考历史几屏的复杂任务用 MAI Agent；想用 Gemini/GPT-4o 等通用多模态模型用 General Vision Agent。详见[Agent 类型怎么选](./explanation/agent-types.md)。
+拿不准就用默认的 GLM Agent。使用 Qwen 模型时选择 Qwen Agent；想用支持图片与工具调用的通用模型时选择 General Vision Agent。旧 MAI、DroidRun、Midscene 已移除，需在设置中改选后保存。详见[Agent 类型怎么选](./explanation/agent-types.md)。
 
 ## 任务执行卡住或跑偏怎么办？
 

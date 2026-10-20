@@ -1085,6 +1085,11 @@ class DeviceManager:
         """
         return self._device_id_to_serial.get(device_id)
 
+    def canonical_device_id(self, device_id: ConnectionDeviceID) -> DeviceSerial:
+        """Return the physical-device identity shared by all known transports."""
+        with self._devices_lock:
+            return self._device_id_to_serial.get(device_id, device_id)
+
     def _ensure_adb_keyboard_once(
         self, device_id: ConnectionDeviceID, managed: ManagedDevice
     ) -> None:

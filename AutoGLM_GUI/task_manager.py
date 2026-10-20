@@ -554,8 +554,7 @@ class TaskManager:
                     is_continue = self._takeover_sessions.pop(session_id, False)
                     stream_kwargs: dict[str, Any] = {}
                     if is_continue:
-                        # Only pass continue_with when the agent supports it
-                        # (DroidRunAgent and MidsceneAgent don't have this param)
+                        # Keep compatibility with external protocol implementations.
                         sig = inspect.signature(agent.stream)
                         if "continue_with" in sig.parameters:
                             stream_kwargs["continue_with"] = task["input_text"]
@@ -813,6 +812,23 @@ class TaskManager:
         finally:
             self._cancel_requested.discard(task_id)
             self._abort_handlers.pop(task_id, None)
+            # A cancelled tool may never emit tool_result, but actions already
+            # executed in that segment still belong in task/history accounting.
+            run_context = getattr(run, "context", None)
+            if run_context is not None:
+                close = getattr(run_context, "close", None)
+                if callable(close):
+                    close_result = close()
+                    if inspect.isawaitable(close_result):
+                        await close_result
+                unknown = getattr(run_context, "fatal_result", None)
+                if unknown is not None and unknown.status == "unknown":
+                    final_status = TaskStatus.FAILED.value
+                    final_message = unknown.message
+                    stop_reason = unknown.stop_reason
+            run_steps = getattr(run_context, "total_steps", None)
+            if isinstance(run_steps, int):
+                step_count = max(step_count, run_steps)
             if clear_session_after_run:
                 reset_layered_session(session_id)
 

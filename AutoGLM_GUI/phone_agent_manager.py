@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -13,6 +13,7 @@ from typing import Any, TypeVar
 
 from AutoGLM_GUI.agents.protocols import AsyncAgent
 from AutoGLM_GUI.config import AgentConfig, ModelConfig
+from AutoGLM_GUI.devices.async_adapter import AsyncDeviceAdapter
 from AutoGLM_GUI.exceptions import (
     AgentInitializationError,
     AgentNotInitializedError,
@@ -147,6 +148,11 @@ class PhoneAgentManager:
         self._agent_configs: dict[str, tuple[ModelConfig, AgentConfig]] = {}
         self._manual_owners: dict[str, str] = {}
         self._manual_uncertain: set[str] = set()
+        self._config_updating = False
+        self._device_leases: dict[str, str] = {}
+        self._device_quarantine: dict[str, str] = {}
+        self._device_identities: dict[str, str] = {}
+        self._device_adapters: dict[str, set[AsyncDeviceAdapter]] = {}
 
     @classmethod
     def get_instance(cls) -> PhoneAgentManager:
@@ -223,6 +229,8 @@ class PhoneAgentManager:
         """Actual initialization logic; caller must hold ``_manager_lock``."""
         from AutoGLM_GUI.agents import create_agent
 
+        if self._config_updating:
+            raise DeviceBusyError("Agent configuration is being updated")
         if device_id in self._agents and not force:
             logger.debug(f"Agent already initialized for {device_id}")
             return self._agents[device_id]
@@ -284,6 +292,11 @@ class PhoneAgentManager:
                 )
 
             self._agents[device_id] = agent
+            adapter = getattr(agent, "device", None)
+            if isinstance(adapter, AsyncDeviceAdapter):
+                self._device_adapters.setdefault(
+                    self._physical_key(actual_device_id), set()
+                ).add(adapter)
             self._agent_configs[device_id] = (model_config, agent_config)
 
             self._metadata[device_id].state = AgentState.IDLE
@@ -539,6 +552,11 @@ class PhoneAgentManager:
                     f"Agent not initialized for device {device_id} (context={context})"
                 )
 
+            physical = self._physical_key(device_id)
+            if physical in self._device_leases or self._physical_busy(physical):
+                raise DeviceBusyError("Stop the active task before resetting its agent")
+            self._quarantine_unsafe_adapter(physical)
+
             # Reset agent state using its reset() method
             self._agents[agent_key].reset()
 
@@ -568,6 +586,13 @@ class PhoneAgentManager:
         """
         agent_key = self._make_agent_key(device_id, context)
         async with self._manager_lock:
+            physical = self._physical_key(device_id)
+            if physical in self._device_leases or self._physical_busy(physical):
+                raise DeviceBusyError(
+                    "Stop the active task before destroying its agent"
+                )
+            self._quarantine_unsafe_adapter(physical)
+
             # Remove agent
             agent = self._agents.pop(agent_key, None)
             if agent:
@@ -612,10 +637,176 @@ class PhoneAgentManager:
 
     # ==================== Concurrency Control ====================
 
+    def _physical_key(self, device_id: str) -> str:
+        from AutoGLM_GUI.device_manager import DeviceManager
+
+        manager = DeviceManager._instance
+        if manager is not None:
+            canonical: Any = manager.canonical_device_id(device_id)
+            if isinstance(canonical, str) and canonical != device_id:
+                self._device_identities[device_id] = canonical
+        return self._device_identities.get(device_id, device_id)
+
+    def _metadata_physical_key(self, metadata: AgentMetadata) -> str:
+        return self._physical_key(metadata.agent_config.device_id or metadata.device_id)
+
+    def _physical_busy(self, physical: str) -> bool:
+        return any(
+            self._metadata_physical_key(metadata) == physical
+            and metadata.state == AgentState.BUSY
+            for metadata in self._metadata.values()
+        )
+
+    def _quarantine_unsafe_adapter(
+        self, physical: str, *, releasing: bool = False
+    ) -> bool:
+        adapters = {
+            adapter
+            for adapter in self._device_adapters.get(physical, set())
+            if adapter.pending_writes or adapter.outcome_unknown
+        }
+        for key, agent in self._agents.items():
+            metadata = self._metadata.get(key)
+            adapter = getattr(agent, "device", None)
+            if (
+                metadata is not None
+                and self._metadata_physical_key(metadata) == physical
+                and isinstance(adapter, AsyncDeviceAdapter)
+            ):
+                adapters.add(adapter)
+        self._device_adapters[physical] = adapters
+        if any(
+            adapter.outcome_unknown
+            or (
+                adapter.pending_writes
+                and (releasing or physical not in self._device_leases)
+            )
+            for adapter in adapters
+        ):
+            self._device_quarantine[physical] = "action_outcome_unknown"
+        return physical in self._device_quarantine
+
+    @contextmanager
+    def configuration_update(self) -> Iterator[None]:
+        """Prevent new writers for the complete config-save/invalidation transaction."""
+        with self._manager_lock:
+            if (
+                self._config_updating
+                or self._device_leases
+                or self._manual_owners
+                or any(
+                    metadata.state == AgentState.BUSY
+                    for metadata in self._metadata.values()
+                )
+            ):
+                raise DeviceBusyError(
+                    "Stop active control before changing agent configuration"
+                )
+            self._config_updating = True
+        try:
+            yield
+        finally:
+            with self._manager_lock:
+                self._config_updating = False
+
+    async def acquire_device_lease(self, device_id: str, owner: str) -> None:
+        """Reserve one physical phone across execution, verification and pauses."""
+        if not owner:
+            raise ValueError("A nonempty task owner is required")
+        async with self._manager_lock:
+            if self._config_updating:
+                raise DeviceBusyError("Agent configuration is being updated")
+            physical = self._physical_key(device_id)
+            if (
+                self._quarantine_unsafe_adapter(physical)
+                or physical in self._manual_uncertain
+            ):
+                raise DeviceBusyError(
+                    "Device action outcome unknown; explicit recovery required"
+                )
+            existing = self._device_leases.get(physical)
+            if existing == owner:
+                return
+            if (
+                existing is not None
+                or physical in self._manual_owners
+                or self._physical_busy(physical)
+            ):
+                raise DeviceBusyError("Another controller owns this physical device")
+            self._device_leases[physical] = owner
+
+    async def release_device_lease(self, device_id: str, owner: str) -> None:
+        async with self._manager_lock:
+            physical = self._physical_key(device_id)
+            if self._device_leases.get(physical) != owner:
+                return
+            self._quarantine_unsafe_adapter(physical, releasing=True)
+            self._device_leases.pop(physical, None)
+
+    async def dispose_device_lease(
+        self, device_id: str, owner: str, context: str
+    ) -> bool:
+        """Remove one owned context and release its physical lease atomically.
+
+        Callers close their model clients outside this lock. Do not reset the
+        agent here: reset would clear cancellation state while a dispatched
+        device operation may still be draining.
+        """
+        disposed = False
+        async with self._manager_lock:
+            physical = self._physical_key(device_id)
+            if self._device_leases.get(physical) == owner:
+                self._quarantine_unsafe_adapter(physical, releasing=True)
+                agent_key = self._make_agent_key(device_id, context)
+                self._agents.pop(agent_key, None)
+                self._agent_configs.pop(agent_key, None)
+                self._metadata.pop(agent_key, None)
+                self._device_leases.pop(physical, None)
+                disposed = True
+        return disposed
+
+    async def validate_device_lease(self, device_id: str, owner: str) -> None:
+        """Validate a checkpoint's existing ownership without reacquiring it."""
+        async with self._manager_lock:
+            physical = self._physical_key(device_id)
+            if (
+                self._config_updating
+                or self._device_leases.get(physical) != owner
+                or self._quarantine_unsafe_adapter(physical)
+                or physical in self._manual_uncertain
+                or any(
+                    adapter.pending_writes
+                    for adapter in self._device_adapters.get(physical, set())
+                )
+            ):
+                raise DeviceBusyError(
+                    "Subtask device ownership is stale or the device requires recovery"
+                )
+
+    async def quarantine_device(self, device_id: str, reason: str) -> None:
+        async with self._manager_lock:
+            self._device_quarantine[self._physical_key(device_id)] = reason
+
+    async def device_recovery_required(self, device_id: str) -> bool:
+        required = True
+        async with self._manager_lock:
+            physical = self._physical_key(device_id)
+            required = (
+                self._quarantine_unsafe_adapter(physical)
+                or physical in self._manual_uncertain
+            )
+        return required
+
     async def acquire_manual_control(self, device_id: str, owner: str) -> None:
         """Share the atomic device boundary with all Agent contexts."""
         async with self._manager_lock:
-            if device_id in self._manual_uncertain:
+            if self._config_updating:
+                raise DeviceBusyError("Agent configuration is being updated")
+            device_id = self._physical_key(device_id)
+            if (
+                self._quarantine_unsafe_adapter(device_id)
+                or device_id in self._manual_uncertain
+            ):
                 raise DeviceBusyError(
                     "Touch result unknown; confirm the phone is idle before recovery"
                 )
@@ -624,10 +815,7 @@ class PhoneAgentManager:
                 and self._manual_owners[device_id] != owner
             ):
                 raise DeviceBusyError("Another controller owns this device")
-            if any(
-                m.device_id == device_id and m.state == AgentState.BUSY
-                for m in self._metadata.values()
-            ):
+            if device_id in self._device_leases or self._physical_busy(device_id):
                 raise DeviceBusyError(
                     "AI is operating this device; stop the task before manual control"
                 )
@@ -635,6 +823,7 @@ class PhoneAgentManager:
 
     async def release_manual_control(self, device_id: str, owner: str) -> None:
         async with self._manager_lock:
+            device_id = self._physical_key(device_id)
             if (
                 device_id not in self._manual_uncertain
                 and self._manual_owners.get(device_id) == owner
@@ -643,21 +832,29 @@ class PhoneAgentManager:
 
     async def quarantine_manual_control(self, device_id: str, owner: str) -> None:
         async with self._manager_lock:
+            device_id = self._physical_key(device_id)
             self._manual_owners[device_id] = owner
             self._manual_uncertain.add(device_id)
 
     async def manual_recovery_required(self, device_id: str) -> bool:
-        required = True
-        async with self._manager_lock:
-            required = device_id in self._manual_uncertain
-        return required
+        return await self.device_recovery_required(device_id)
 
     async def recover_manual_control(self, device_id: str) -> None:
         """Only called after an explicit human confirmation, never by reconnect."""
         async with self._manager_lock:
-            if device_id in self._manual_uncertain:
-                self._manual_uncertain.remove(device_id)
-                self._manual_owners.pop(device_id, None)
+            physical = self._physical_key(device_id)
+            adapters = self._device_adapters.get(physical, set())
+            if any(adapter.pending_writes for adapter in adapters):
+                raise DeviceBusyError(
+                    "Device write is still in flight; recovery is not safe"
+                )
+            if physical in self._device_leases or self._physical_busy(physical):
+                raise DeviceBusyError("Stop the active task before device recovery")
+            for adapter in adapters:
+                adapter.recover()
+            self._device_quarantine.pop(physical, None)
+            self._manual_uncertain.discard(physical)
+            self._manual_owners.pop(physical, None)
 
     def _make_agent_key(self, device_id: str, context: str = "default") -> str:
         """Build composite key for device+context isolation."""
@@ -707,7 +904,15 @@ class PhoneAgentManager:
         # window where another task can destroy the agent, leaving us returning
         # ``True`` without ever setting the state to BUSY.
         async with self._manager_lock:
-            if device_id in self._manual_owners:
+            if self._config_updating:
+                raise DeviceBusyError("Agent configuration is being updated")
+            physical = self._physical_key(device_id)
+            if (
+                physical in self._manual_owners
+                or physical in self._device_leases
+                or self._quarantine_unsafe_adapter(physical)
+                or self._physical_busy(physical)
+            ):
                 if raise_on_timeout:
                     raise DeviceBusyError(
                         "Device is under manual control or awaiting touch recovery"
@@ -737,6 +942,7 @@ class PhoneAgentManager:
                 return False
             metadata.state = AgentState.BUSY
             metadata.last_used = time.time()
+            self._device_leases[physical] = f"agent:{agent_key}"
 
         logger.debug(f"Device lock acquired for {agent_key}")
         return True
@@ -819,6 +1025,10 @@ class PhoneAgentManager:
         """
         agent_key = self._make_agent_key(device_id, context)
         async with self._manager_lock:
+            physical = self._physical_key(device_id)
+            self._quarantine_unsafe_adapter(physical, releasing=True)
+            if self._device_leases.get(physical) == f"agent:{agent_key}":
+                self._device_leases.pop(physical, None)
             metadata = self._metadata.get(agent_key)
             if metadata:
                 # Only transition BUSY→IDLE; preserve ERROR state so callers
@@ -918,7 +1128,16 @@ class PhoneAgentManager:
         state = AgentState.ERROR
         async with self._manager_lock:
             metadata = self._metadata.get(device_id)
-            state = metadata.state if metadata else AgentState.ERROR
+            physical = self._physical_key(device_id)
+            if (
+                physical in self._device_quarantine
+                or physical in self._manual_uncertain
+            ):
+                state = AgentState.ERROR
+            elif physical in self._device_leases:
+                state = AgentState.BUSY
+            else:
+                state = metadata.state if metadata else AgentState.ERROR
         return state
 
     def get_state(self, device_id: str) -> AgentState:
@@ -1218,6 +1437,14 @@ class PhoneAgentManager:
         """
         count = 0
         async with self._manager_lock:
+            if self._device_leases or any(
+                m.state == AgentState.BUSY for m in self._metadata.values()
+            ):
+                raise DeviceBusyError(
+                    "Stop active tasks before changing agent configuration"
+                )
+            for metadata in self._metadata.values():
+                self._quarantine_unsafe_adapter(self._metadata_physical_key(metadata))
             agent_keys = list(self._agents.keys())
             count = len(agent_keys)
 

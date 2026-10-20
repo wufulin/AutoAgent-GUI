@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -33,6 +35,81 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
 
     def __init__(self, device: DeviceProtocol | AsyncDeviceProtocol):
         self._device = device
+        self._write_lock = threading.Lock()
+        self._writes: set[threading.Event] = set()
+        self._write_tasks: set[asyncio.Task[Any]] = set()
+        self._outcome_unknown = False
+
+    @property
+    def pending_writes(self) -> bool:
+        """A cancelled await does not imply the physical call has returned."""
+        with self._write_lock:
+            self._writes = {event for event in self._writes if not event.is_set()}
+            return bool(self._writes)
+
+    @property
+    def outcome_unknown(self) -> bool:
+        with self._write_lock:
+            return self._outcome_unknown
+
+    async def drain(self, timeout: float = 5.0) -> bool:
+        """Wait boundedly for dispatched operations, without cancelling them."""
+        deadline = time.monotonic() + max(timeout, 0.0)
+        while self.pending_writes:
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+        return True
+
+    def recover(self) -> None:
+        """Clear uncertainty only after an explicit observed-idle recovery."""
+        with self._write_lock:
+            if any(not event.is_set() for event in self._writes):
+                raise RuntimeError("Device write is still in flight")
+            self._writes.clear()
+            self._outcome_unknown = False
+
+    async def _write(self, fn: Callable[..., Any], *args: Any) -> Any:
+        completed = threading.Event()
+        with self._write_lock:
+            if self._outcome_unknown or any(
+                not event.is_set() for event in self._writes
+            ):
+                raise RuntimeError("Device requires recovery before another write")
+            self._writes = {completed}
+
+        def sync_call() -> Any:
+            try:
+                return fn(*args)
+            finally:
+                # This flag is set by the worker itself, not by a cancelled
+                # asyncio Future that may still have a live worker thread.
+                completed.set()
+
+        async def invoke() -> Any:
+            if asyncio.iscoroutinefunction(fn):
+                try:
+                    return await fn(*args)
+                finally:
+                    completed.set()
+            return await asyncio.to_thread(sync_call)
+
+        task = asyncio.create_task(invoke())
+        self._write_tasks.add(task)
+
+        def finished(done: asyncio.Task[Any]) -> None:
+            self._write_tasks.discard(done)
+            if done.cancelled() or done.exception() is not None:
+                with self._write_lock:
+                    self._outcome_unknown = True
+
+        task.add_done_callback(finished)
+        try:
+            return await asyncio.shield(task)
+        except BaseException:
+            with self._write_lock:
+                self._outcome_unknown = True
+            raise
 
     @property
     def device_id(self) -> str:
@@ -50,14 +127,14 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
             "device_adapter.tap",
             attrs={"device_id": self.device_id, "x": x, "y": y},
         ):
-            await _maybe_await(self._device.tap, x, y, delay)
+            await self._write(self._device.tap, x, y, delay)
 
     async def double_tap(self, x: int, y: int, delay: float | None = None) -> None:
         with trace_span(
             "device_adapter.double_tap",
             attrs={"device_id": self.device_id, "x": x, "y": y},
         ):
-            await _maybe_await(self._device.double_tap, x, y, delay)
+            await self._write(self._device.double_tap, x, y, delay)
 
     async def long_press(
         self,
@@ -70,7 +147,7 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
             "device_adapter.long_press",
             attrs={"device_id": self.device_id, "x": x, "y": y},
         ):
-            await _maybe_await(self._device.long_press, x, y, duration_ms, delay)
+            await self._write(self._device.long_press, x, y, duration_ms, delay)
 
     async def swipe(
         self,
@@ -85,7 +162,7 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
             "device_adapter.swipe",
             attrs={"device_id": self.device_id},
         ):
-            await _maybe_await(
+            await self._write(
                 self._device.swipe,
                 start_x,
                 start_y,
@@ -100,35 +177,35 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
             "device_adapter.type_text",
             attrs={"device_id": self.device_id, "text_length": len(text)},
         ):
-            await _maybe_await(self._device.type_text, text)
+            await self._write(self._device.type_text, text)
 
     async def clear_text(self) -> None:
         with trace_span(
             "device_adapter.clear_text",
             attrs={"device_id": self.device_id},
         ):
-            await _maybe_await(self._device.clear_text)
+            await self._write(self._device.clear_text)
 
     async def back(self, delay: float | None = None) -> None:
         with trace_span(
             "device_adapter.back",
             attrs={"device_id": self.device_id},
         ):
-            await _maybe_await(self._device.back, delay)
+            await self._write(self._device.back, delay)
 
     async def home(self, delay: float | None = None) -> None:
         with trace_span(
             "device_adapter.home",
             attrs={"device_id": self.device_id},
         ):
-            await _maybe_await(self._device.home, delay)
+            await self._write(self._device.home, delay)
 
     async def launch_app(self, app_name: str, delay: float | None = None) -> bool:
         with trace_span(
             "device_adapter.launch_app",
             attrs={"device_id": self.device_id, "app_name": app_name},
         ):
-            return await _maybe_await(self._device.launch_app, app_name, delay)
+            return await self._write(self._device.launch_app, app_name, delay)
 
     async def get_current_app(self) -> str:
         with trace_span(
@@ -142,14 +219,14 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
             "device_adapter.detect_and_set_adb_keyboard",
             attrs={"device_id": self.device_id},
         ):
-            return await _maybe_await(self._device.detect_and_set_adb_keyboard)
+            return await self._write(self._device.detect_and_set_adb_keyboard)
 
     async def restore_keyboard(self, ime: str) -> None:
         with trace_span(
             "device_adapter.restore_keyboard",
             attrs={"device_id": self.device_id},
         ):
-            await _maybe_await(self._device.restore_keyboard, ime)
+            await self._write(self._device.restore_keyboard, ime)
 
     def __getattr__(self, name: str) -> Any:
         """Forward any other attribute access to the wrapped device."""

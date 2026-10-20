@@ -62,7 +62,7 @@
 - Model calls: classic agents emit `step.llm`; layered planner streaming emits `model.call` and `layered.planner.*`.
 - Tool calls: layered planner emits `tool.call` and `tool.result`; Gemini function calling emits `tool.call`.
 - ADB/device calls: device wrappers and low-level ADB operations emit `device.*` and `adb.*` spans.
-- Memory and persistence: MAI trajectory memory emits `memory.read` and `memory.write`; layered planner SQLite sessions emit `memory.read`, `memory.write`, `memory.delete`, and `memory.clear`; task/history writes emit `task_store.*` and `history.*`.
+- Memory and persistence: layered planner SQLite sessions emit `memory.read`, `memory.write`, `memory.delete`, and `memory.clear`; task/history writes emit `task_store.*` and `history.*`.
 - Task summaries: task completion appends a `trace_summary` event and records Prometheus latency metrics from the same trace data.
 
 ### Debugging workflow

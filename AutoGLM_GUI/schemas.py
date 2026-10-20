@@ -283,7 +283,8 @@ class ConfigResponse(BaseModel):
     temperature: float = 0.0
 
     # Agent 类型配置
-    agent_type: str = "glm-async"  # Agent type (e.g., "glm-async", "mai")
+    agent_type: str = "glm-async"
+    agent_type_supported: bool = True
     agent_config_params: dict[str, Any] | None = None  # Agent-specific configuration
 
     # Agent 执行配置
@@ -311,7 +312,7 @@ class ConfigSaveRequest(BaseModel):
     temperature: float | None = None
 
     # Agent 类型配置
-    agent_type: str = "glm-async"  # Agent type to use (e.g., "glm-async", "mai")
+    agent_type: str = "glm-async"
     agent_config_params: dict[str, Any] | None = (
         None  # Agent-specific configuration parameters
     )
@@ -326,6 +327,15 @@ class ConfigSaveRequest(BaseModel):
     decision_base_url: str | None = None
     decision_model_name: str | None = None
     decision_api_key: str | None = None
+
+    @field_validator("agent_type")
+    @classmethod
+    def validate_agent_type(cls, value: str) -> str:
+        from AutoGLM_GUI.types import REMOVED_AGENT_TYPES
+
+        if value in REMOVED_AGENT_TYPES:
+            raise ValueError("This executor was removed; select GLM, Qwen or Gemini")
+        return value
 
     @field_validator("default_max_steps")
     @classmethod
@@ -776,6 +786,8 @@ class HistoryRecordResponse(BaseModel):
     task_text: str
     final_message: str
     success: bool
+    result_status: str | None = None
+    stop_reason: str | None = None
     steps: int
     start_time: str
     end_time: str | None

@@ -18,6 +18,8 @@ from AutoGLM_GUI.trace import (
     write_replay_event,
 )
 
+MAX_BUFFERED_FRAMES = 60
+
 
 @dataclass
 class PhoneAgentReplay:
@@ -26,7 +28,7 @@ class PhoneAgentReplay:
     device_id: str
     call_id: str = field(default_factory=lambda: uuid4().hex)
     sequence: int = 0
-    # At most five steps, each with observation/pre-action/post-action frames.
+    # A segment has up to 20 steps and three observation/action frames per step.
     frames: list[dict[str, Any]] = field(default_factory=list)
     _lock: Any = field(default_factory=threading.Lock, repr=False)
 
@@ -53,9 +55,11 @@ class PhoneAgentReplay:
         if mode == "off":
             event["payload"].pop("screenshot", None)
         # Default artifact mode writes immediately, including before inference.
-        # on_error waits for the outcome of the entire subtask, not each tap.
-        if mode == "on_error" and data.get("screenshot") and len(self.frames) < 20:
+        # on_error waits for the verified segment outcome, not each tap. Retain
+        # the newest evidence if a recorder emits more than the expected frames.
+        if mode == "on_error" and data.get("screenshot"):
             self.frames.append(event)
+            del self.frames[:-MAX_BUFFERED_FRAMES]
         else:
             self._write(event)
 

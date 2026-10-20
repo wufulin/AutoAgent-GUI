@@ -107,6 +107,7 @@ class AsyncGeminiAgent(AsyncAgentBase):
                         "success": False,
                         "finished": True,
                         "message": f"Device error: {e}",
+                        "stop_reason": "device_error",
                     },
                 }
                 return
@@ -185,6 +186,7 @@ class AsyncGeminiAgent(AsyncAgentBase):
                     "finished": True,
                     "message": message,
                     "error_details": error_details,
+                    "stop_reason": "model_error",
                 },
             }
             return
@@ -284,6 +286,7 @@ class AsyncGeminiAgent(AsyncAgentBase):
                     "action": action,
                     "success": False,
                     "finished": limit_reached,
+                    "stop_reason": "invalid_tool_arguments",
                     "message": message,
                     "screenshot": screenshot.base64_data if screenshot else None,
                 },

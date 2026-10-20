@@ -1,6 +1,6 @@
 import React from 'react';
-import { CheckCircle2, AlertCircle, Trash2 } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { Trash2 } from 'lucide-react';
+import { ResultStatusBadge } from './ResultStatusBadge';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import type { HistoryRecordResponse } from '../api';
@@ -83,22 +83,10 @@ export function HistoryItemCard({
 
           <div className="flex items-center gap-2">
             {/* Status Badge */}
-            <Badge
-              variant={item.success ? 'success' : 'destructive'}
-              className="shrink-0"
-            >
-              {item.success ? (
-                <>
-                  <CheckCircle2 className="w-3 h-3 mr-1" />
-                  {t.history.success}
-                </>
-              ) : (
-                <>
-                  <AlertCircle className="w-3 h-3 mr-1" />
-                  {t.history.failed}
-                </>
-              )}
-            </Badge>
+            <ResultStatusBadge
+              status={item.result_status}
+              success={item.success}
+            />
 
             {/* Delete Button */}
             <Button

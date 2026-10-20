@@ -6,32 +6,23 @@ sidebar_position: 2
 
 # Agent 类型怎么选
 
-初始化设备时（设置对话框里），可以选择不同的 **Agent 类型**。不同 Agent 对应不同的底层模型与解析方式，适合不同模型来源和任务难度。默认是 **GLM Agent**。
+「设置 → 视觉模型」提供三类执行器。类型应与模型的动作输出方式一致；默认是 GLM Agent。
 
-![Agent 类型与高级配置](/img/screenshots/settings-agent-types.png)
+| Agent | 配置值 | 适用模型与协议 |
+| --- | --- | --- |
+| GLM Agent | `glm-async` | AutoGLM-Phone / GLM 的文本动作格式 |
+| Qwen Agent | `qwen` | Qwen 的视觉动作与 `<answer>` 格式 |
+| General Vision Agent | `gemini` | 支持图片输入和 Function Calling 的通用视觉模型 |
 
-## 各类型一览
+`async-glm` 和 `general-vision` 旧别名继续有效；原始 `glm` 配置在读取和保存时规范化为 `glm-async`。分层规划与直接执行均使用同一类视觉执行器；分层模式另需配置决策模型。
 
-| Agent | 适用模型 | 特点 | 何时选 |
-| --- | --- | --- | --- |
-| **GLM Agent** | 智谱 GLM / AutoGLM-Phone | 成熟稳定，针对 GLM 优化 | 大多数任务的默认选择 |
-| **MAI Agent** | 视觉模型 | 支持多张历史截图上下文，中文优化 | 需要「看历史几步」的复杂任务 |
-| **General Vision Agent** | Gemini / GPT-4o 等 | 基于 Function Calling 的通用视觉 Agent | 想用通用多模态大模型（非专用手机模型） |
-| **Qwen Agent** | Qwen 系列 | 适配 Qwen，偏高精度困难任务 | 用 Qwen 模型时 |
-| **DroidRun Agent** | — | 基于 DroidRun 框架，需 Portal APK | 接入 DroidRun 生态时 |
-| **Midscene Agent** | — | 基于 Midscene.js，需 Node.js 环境 | 接入 Midscene 视觉驱动时 |
+## 旧配置迁移
 
-## MAI Agent 的额外参数
+MAI、DroidRun、Midscene 已移除，不再提供其代码、依赖、界面选项或专用参数。
+已有配置文件仍能读取，并保留旧 `agent_type` 及模型地址、名称等字段；配置接口返回 `agent_type_supported=false`，界面提示改选。系统不会自动换成 GLM 或其他执行器。旧类型不能保存或初始化。
 
-选择 MAI Agent 时可配置 `history_n`：传给模型的历史截图数量（1–10，默认 3）。截图越多，模型对「我刚才做了什么」越有上下文，但 token 成本也越高。
+改选 GLM、Qwen 或 General Vision 并保存后，旧 `agent_config_params` 会清空，即使旧客户端仍发送这些参数也不会带入新类型。旧任务与历史数据不删除，旧的 Agent 名称按普通文本显示。
 
-MAI Agent 还提供流式思考输出、中文优化 Prompt、性能监控（LLM 耗时、动作统计）。
+如需回滚，恢复上一版本代码与依赖；已经保存的新类型配置仍兼容。若要恢复旧专用参数，请从升级前自行保留的配置恢复，系统不会重建已经清空的值。
 
-## 选型建议
-
-- **拿不准就用 GLM Agent**：默认、稳定、覆盖大多数场景。
-- **任务依赖上下文**（要参考前几屏内容）：用 MAI Agent，适当调大 `history_n`。
-- **手头只有通用多模态模型**（如 Gemini / GPT-4o）：用 General Vision Agent。
-- **DroidRun / Midscene** 面向特定框架集成，需要额外环境，普通用户一般用不到。
-
-> 在哪里设置见[配置模型服务](../guide/configure-model.md)。注册的 Agent 类型由后端 `AutoGLM_GUI/agents/factory.py` 定义。
+配置入口见[配置模型服务](../guide/configure-model.md)，执行方式见[两种工作模式](./modes.md)。

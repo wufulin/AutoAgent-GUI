@@ -79,6 +79,57 @@ def _tool_result_text(payload: dict[str, Any]) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+def _task_result_status(
+    record: dict[str, Any], events: list[dict[str, Any]]
+) -> str | None:
+    """Expose detailed outcomes without claiming legacy successes were verified."""
+    statuses = {
+        "completed",
+        "partial",
+        "blocked",
+        "failed",
+        "cancelled",
+        "needs_user",
+        "unknown",
+    }
+    if record["status"] == TaskStatus.CANCELLED.value:
+        return "cancelled"
+    terminal_result = next(
+        (
+            event["payload"]["result_status"]
+            for event in reversed(events)
+            if event["event_type"] in {"done", "error", "cancelled", "takeover"}
+            and isinstance(event["payload"].get("result_status"), str)
+            and event["payload"].get("result_status") in statuses
+        ),
+        None,
+    )
+    subtask_result = next(
+        (
+            event["payload"]["result"]
+            for event in reversed(events)
+            if event["event_type"] == "tool_result"
+            and isinstance(event["payload"].get("result"), dict)
+            and event["payload"]["result"].get("subtask_id")
+            and isinstance(event["payload"]["result"].get("status"), str)
+            and event["payload"]["result"].get("status") in statuses
+        ),
+        None,
+    )
+    result_status = terminal_result or (
+        subtask_result["status"] if subtask_result else None
+    )
+    if record["status"] == TaskStatus.SUCCEEDED.value:
+        return "completed" if result_status == "completed" else None
+    if result_status == "completed":
+        return "failed"
+    if result_status is not None:
+        return str(result_status)
+    if record.get("stop_reason") == "takeover":
+        return "needs_user"
+    return None
+
+
 def _trace_summary_from_payload(
     payload: dict[str, Any],
 ) -> TraceSummaryResponse | None:
@@ -270,6 +321,10 @@ def _build_history_record_from_task(
         task_text=str(record["input_text"]),
         final_message=str(final_message),
         success=success,
+        result_status=_task_result_status(record, events),
+        stop_reason=str(record["stop_reason"])
+        if record.get("stop_reason") is not None
+        else None,
         steps=int(record.get("step_count", 0)),
         start_time=str(start_time),
         end_time=str(end_time) if end_time else None,

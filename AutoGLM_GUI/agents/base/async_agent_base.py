@@ -58,7 +58,11 @@ class AsyncAgentBase(ABC):
             timeout=120,
         )
 
-        self.device = AsyncDeviceAdapter(device)
+        self.device = (
+            device
+            if isinstance(device, AsyncDeviceAdapter)
+            else AsyncDeviceAdapter(device)
+        )
         self.action_handler = AsyncActionHandler(
             device=self.device,
             confirmation_callback=confirmation_callback,
@@ -78,6 +82,10 @@ class AsyncAgentBase(ABC):
         self._step_count = 0
         self._is_running = False
         self._initial_screenshot: Screenshot | None = None
+        self._watchdog_started_at = 0.0
+        self._repeated_action_count = 0
+        self._no_progress_count = 0
+        self._last_action_signature: str | None = None
 
     def get_system_prompt(self) -> str:
         """Resolve the current override without changing the adapter's format."""
@@ -115,20 +123,35 @@ class AsyncAgentBase(ABC):
     # ==================== 共享逻辑 ====================
 
     async def stream(
-        self, task: str, *, continue_with: str | None = None
+        self,
+        task: str,
+        *,
+        continue_with: str | None = None,
+        step_budget: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式执行任务，支持取消和继续执行。
 
         Args:
             task: 任务文本或用户输入
-            continue_with: 如果设置，表示在 Take_over/Interact 后继续执行。
+            step_budget: 本轮最多执行的步数；不改变 max_steps 的累计上限。
+            continue_with: 如果设置，表示在子任务预算耗尽或 Take_over/Interact 后继续执行。
                            不重置 step_count，将用户输入添加到上下文后继续循环。
         """
         INTERACTION_ACTIONS = ("Take_over", "Interact")
 
+        if step_budget is not None and (
+            type(step_budget) is not int or step_budget < 1
+        ):
+            raise ValueError("step_budget must be a positive integer")
+        if self._is_running:
+            raise RuntimeError("Agent already has an active stream")
         self._is_running = True
         if continue_with is None:
             self._step_count = 0
+            self._watchdog_started_at = time.monotonic()
+            self._repeated_action_count = 0
+            self._no_progress_count = 0
+            self._last_action_signature = None
         else:
             logger.info(
                 "Continuing agent stream from step %d with user input: %s",
@@ -136,6 +159,7 @@ class AsyncAgentBase(ABC):
                 summarize_text(continue_with) or "",
             )
         self._cancel_event.clear()
+        call_start_step = self._step_count
 
         if continue_with is not None:
             self._context.append(MessageBuilder.create_user_message(continue_with))
@@ -177,6 +201,8 @@ class AsyncAgentBase(ABC):
                                 "message": f"Device error: {e}",
                                 "steps": 0,
                                 "success": False,
+                                "status": "failed",
+                                "stop_reason": "device_error",
                             },
                         }
                         return
@@ -193,17 +219,30 @@ class AsyncAgentBase(ABC):
                             self._user_image_attachments,
                         )
 
-                started_at = time.monotonic()
-                repeated_action_count = 0
-                no_progress_count = 0
-                last_action_signature: str | None = None
-
-                while self._is_running and (
-                    self.agent_config.max_steps is None
-                    or self._step_count < self.agent_config.max_steps
+                while (
+                    self._is_running
+                    and (
+                        self.agent_config.max_steps is None
+                        or self._step_count < self.agent_config.max_steps
+                    )
+                    and (
+                        step_budget is None
+                        or self._step_count - call_start_step < step_budget
+                    )
                 ):
                     if self._cancel_event.is_set():
                         raise asyncio.CancelledError()
+                    watchdog_reason = self._watchdog_stop_reason()
+                    if watchdog_reason is not None:
+                        stream_span.set_attributes(
+                            {
+                                "success": False,
+                                "steps": self._step_count,
+                                "error_kind": watchdog_reason,
+                            }
+                        )
+                        yield self._watchdog_terminal(watchdog_reason)
+                        return
 
                     step_number = self._step_count + 1
                     with trace_span(
@@ -215,6 +254,8 @@ class AsyncAgentBase(ABC):
                         },
                     ) as step_span:
                         async for event in self._execute_step():
+                            if self._cancel_event.is_set():
+                                raise asyncio.CancelledError()
                             if event["type"] == "step":
                                 step_span.set_attributes(
                                     {
@@ -232,16 +273,41 @@ class AsyncAgentBase(ABC):
                                     sort_keys=True,
                                 )
                                 if action_signature and action_signature != "null":
-                                    if action_signature == last_action_signature:
-                                        repeated_action_count += 1
+                                    if action_signature == self._last_action_signature:
+                                        self._repeated_action_count += 1
                                     else:
-                                        last_action_signature = action_signature
-                                        repeated_action_count = 1
-                                    no_progress_count = 0
+                                        self._last_action_signature = action_signature
+                                        self._repeated_action_count = 1
+                                    self._no_progress_count = 0
                                 else:
-                                    no_progress_count += 1
+                                    self._no_progress_count += 1
 
                             yield event
+
+                            if self.device.outcome_unknown:
+                                yield {
+                                    "type": "done",
+                                    "data": {
+                                        "message": "Device action outcome is unknown; observe and recover before continuing",
+                                        "steps": self._step_count,
+                                        "success": False,
+                                        "status": "unknown",
+                                        "stop_reason": "action_outcome_unknown",
+                                    },
+                                }
+                                return
+
+                            watchdog_reason = self._watchdog_stop_reason()
+                            if watchdog_reason is not None:
+                                stream_span.set_attributes(
+                                    {
+                                        "success": False,
+                                        "steps": self._step_count,
+                                        "error_kind": watchdog_reason,
+                                    }
+                                )
+                                yield self._watchdog_terminal(watchdog_reason)
+                                return
 
                             if event["type"] == "step":
                                 step_data = event["data"]
@@ -257,6 +323,7 @@ class AsyncAgentBase(ABC):
                                             "steps": self._step_count,
                                             "success": True,
                                             "stop_reason": "takeover",
+                                            "status": "needs_user",
                                         },
                                     }
                                     return
@@ -279,70 +346,25 @@ class AsyncAgentBase(ABC):
                                         ),
                                         "steps": self._step_count,
                                         "success": success,
+                                        "status": "completion_requested"
+                                        if success
+                                        else "failed",
+                                        "stop_reason": event["data"].get(
+                                            "stop_reason",
+                                            "model_finished"
+                                            if success
+                                            else "execution_failed",
+                                        ),
                                     },
                                 }
                                 return
 
-                            if repeated_action_count >= WATCHDOG_REPEATED_ACTION_LIMIT:
-                                stream_span.set_attributes(
-                                    {
-                                        "success": False,
-                                        "steps": self._step_count,
-                                        "error_kind": "watchdog_repeated_actions",
-                                    }
-                                )
-                                yield {
-                                    "type": "done",
-                                    "data": {
-                                        "message": "Watchdog stopped task after repeated actions",
-                                        "steps": self._step_count,
-                                        "success": False,
-                                        "stop_reason": "watchdog_repeated_actions",
-                                    },
-                                }
-                                return
-
-                            if no_progress_count >= WATCHDOG_NO_PROGRESS_LIMIT:
-                                stream_span.set_attributes(
-                                    {
-                                        "success": False,
-                                        "steps": self._step_count,
-                                        "error_kind": "watchdog_no_progress",
-                                    }
-                                )
-                                yield {
-                                    "type": "done",
-                                    "data": {
-                                        "message": "Watchdog stopped task because no progress was detected",
-                                        "steps": self._step_count,
-                                        "success": False,
-                                        "stop_reason": "watchdog_no_progress",
-                                    },
-                                }
-                                return
-
-                            if (
-                                time.monotonic() - started_at
-                                >= WATCHDOG_MAX_RUNTIME_SECONDS
-                            ):
-                                stream_span.set_attributes(
-                                    {
-                                        "success": False,
-                                        "steps": self._step_count,
-                                        "error_kind": "watchdog_timeout",
-                                    }
-                                )
-                                yield {
-                                    "type": "done",
-                                    "data": {
-                                        "message": "Watchdog stopped task after maximum runtime was reached",
-                                        "steps": self._step_count,
-                                        "success": False,
-                                        "stop_reason": "watchdog_timeout",
-                                    },
-                                }
-                                return
-
+                if self._cancel_event.is_set() or not self._is_running:
+                    raise asyncio.CancelledError()
+                total_limit = (
+                    self.agent_config.max_steps is not None
+                    and self._step_count >= self.agent_config.max_steps
+                )
                 stream_span.set_attributes(
                     {
                         "success": False,
@@ -353,10 +375,15 @@ class AsyncAgentBase(ABC):
                 yield {
                     "type": "done",
                     "data": {
-                        "message": "Max steps reached",
+                        "message": "Max steps reached"
+                        if total_limit
+                        else "Step budget reached",
                         "steps": self._step_count,
                         "success": False,
-                        "stop_reason": "max_steps_reached",
+                        "stop_reason": "max_steps_reached"
+                        if total_limit
+                        else "step_budget_reached",
+                        "status": "partial",
                     },
                 }
 
@@ -373,6 +400,9 @@ class AsyncAgentBase(ABC):
                     "data": {
                         "message": "Task cancelled by user",
                         "stop_reason": "user_stopped",
+                        "status": "cancelled",
+                        "success": False,
+                        "steps": self._step_count,
                     },
                 }
                 raise
@@ -381,6 +411,31 @@ class AsyncAgentBase(ABC):
                 self._user_image_attachments = []
                 self._is_running = False
 
+    def _watchdog_stop_reason(self) -> str | None:
+        if self._repeated_action_count >= WATCHDOG_REPEATED_ACTION_LIMIT:
+            return "watchdog_repeated_actions"
+        if self._no_progress_count >= WATCHDOG_NO_PROGRESS_LIMIT:
+            return "watchdog_no_progress"
+        if time.monotonic() - self._watchdog_started_at >= WATCHDOG_MAX_RUNTIME_SECONDS:
+            return "watchdog_timeout"
+        return None
+
+    def _watchdog_terminal(self, reason: str) -> dict[str, Any]:
+        return {
+            "type": "done",
+            "data": {
+                "message": {
+                    "watchdog_repeated_actions": "Watchdog stopped task after repeated actions",
+                    "watchdog_no_progress": "Watchdog stopped task because no progress was detected",
+                    "watchdog_timeout": "Watchdog stopped task after maximum runtime was reached",
+                }[reason],
+                "steps": self._step_count,
+                "success": False,
+                "stop_reason": reason,
+                "status": "blocked",
+            },
+        }
+
     def set_user_image_attachments(self, attachments: list[dict[str, str]]) -> None:
         """Set user-supplied reference images for the next streamed task."""
         self._user_image_attachments = attachments.copy()
@@ -388,7 +443,6 @@ class AsyncAgentBase(ABC):
     async def cancel(self) -> None:
         """取消当前执行。"""
         self._cancel_event.set()
-        self._is_running = False
         logger.info(f"{self.__class__.__name__} cancelled by user")
 
     def reset(self) -> None:
@@ -400,6 +454,10 @@ class AsyncAgentBase(ABC):
         self._initial_screenshot = None
         self._user_image_attachments = []
         self._step_count = 0
+        self._watchdog_started_at = 0.0
+        self._repeated_action_count = 0
+        self._no_progress_count = 0
+        self._last_action_signature = None
         self._is_running = False
         self._cancel_event.clear()
 

@@ -6,6 +6,7 @@
  * docs/static/img/screenshots/ for the Diátaxis docs.
  *
  * Run only this file (backend on a free port to avoid clashing with other apps):
+ *   ADB_SERVER_SOCKET=tcp:127.0.0.1:1 \
  *   AUTOGLM_E2E_BACKEND_PORT=8077 VITE_PROXY_TARGET=http://localhost:8077 \
  *     pnpm exec playwright test docs-screenshots.spec.ts
  *
@@ -36,6 +37,15 @@ type ServiceUrls = {
   backend_url: string;
 };
 
+type TaskRun = { id: string; status: string };
+const terminalStatuses = new Set([
+  'SUCCEEDED',
+  'FAILED',
+  'CANCELLED',
+  'INTERRUPTED',
+]);
+const submittedTaskIds: string[] = [];
+
 function readServiceUrls(): ServiceUrls {
   const urlsPath = path.resolve(__dirname, '.service_urls.json');
   if (!fs.existsSync(urlsPath)) {
@@ -47,7 +57,8 @@ function readServiceUrls(): ServiceUrls {
 }
 
 async function setupMockDeviceAndConfig(
-  request: APIRequestContext
+  request: APIRequestContext,
+  page: Page
 ): Promise<string> {
   const { backend_url, agent_url, llm_url } = readServiceUrls();
   // Use a unique device ID so this spec does not collide with other E2E
@@ -71,23 +82,45 @@ async function setupMockDeviceAndConfig(
     /* device may already exist */
   }
 
-  try {
-    await request.delete(`${backend_url}/api/config`);
-    await request.post(`${backend_url}/api/config`, {
-      data: {
-        base_url: `${llm_url}/v1`,
-        model_name: 'mock-glm-model',
-        api_key: 'mock-key',
-        agent_type: 'glm-async',
-        decision_base_url: `${llm_url}/v1`,
-        decision_model_name: 'mock-planner',
-        decision_api_key: 'mock-key',
+  expect((await request.delete(`${backend_url}/api/config`)).ok()).toBe(true);
+  const config = await request.post(`${backend_url}/api/config`, {
+    data: {
+      base_url: `${llm_url}/v1`,
+      model_name: 'mock-glm-model',
+      api_key: 'mock-key',
+      agent_type: 'glm-async',
+      decision_base_url: `${llm_url}/v1`,
+      decision_model_name: 'mock-planner',
+      decision_api_key: 'mock-key',
+    },
+  });
+  expect(config.ok(), await config.text()).toBe(true);
+  // The documentation scenario owns one remote mock device. Do not let the
+  // home page auto-select another device connected to the test workstation.
+  await page.route('**/api/devices', async route => {
+    const response = await route.fetch();
+    const body = (await response.json()) as {
+      devices: { serial: string }[];
+    };
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        devices: body.devices.filter(device => device.serial === serial),
       },
     });
-  } catch {
-    /* ignore */
-  }
+  });
   return serial;
+}
+
+async function readTask(
+  request: APIRequestContext,
+  backendUrl: string,
+  taskId: string
+): Promise<TaskRun> {
+  const response = await request.get(`${backendUrl}/api/tasks/${taskId}`);
+  expect(response.ok(), await response.text()).toBe(true);
+  return (await response.json()) as TaskRun;
 }
 
 const results: { name: string; ok: boolean; error?: string }[] = [];
@@ -148,16 +181,41 @@ test.describe('Docs screenshots', () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    submittedTaskIds.length = 0;
     await page.addInitScript(() => {
       localStorage.setItem('locale', 'zh');
     });
     page.setDefaultTimeout(8000);
   });
 
+  test.afterEach(async ({ request }) => {
+    const { backend_url } = readServiceUrls();
+    // A failed screenshot must not leave this test's task holding control and
+    // block the following spec from changing its model configuration.
+    for (const taskId of submittedTaskIds) {
+      const task = await readTask(request, backend_url, taskId);
+      if (!terminalStatuses.has(task.status)) {
+        const cancelled = await request.post(
+          `${backend_url}/api/tasks/${taskId}/cancel`
+        );
+        expect(cancelled.ok(), await cancelled.text()).toBe(true);
+        await expect
+          .poll(
+            async () =>
+              terminalStatuses.has(
+                (await readTask(request, backend_url, taskId)).status
+              ),
+            { timeout: 15000 }
+          )
+          .toBe(true);
+      }
+    }
+  });
+
   test('capture all pages and dialogs', async ({ page, request }) => {
     test.setTimeout(300000);
     results.length = 0; // reset shared state so failures don't cascade
-    const serial = await setupMockDeviceAndConfig(request);
+    const serial = await setupMockDeviceAndConfig(request, page);
     const chatUrl = `/chat?serial=${encodeURIComponent(serial)}&mode=classic`;
 
     // ---- Top-level pages ----
@@ -326,8 +384,8 @@ test.describe('Docs screenshots', () => {
   }) => {
     test.setTimeout(300000);
     results.length = 0; // reset shared state so failures don't cascade
-    const { backend_url, agent_url } = readServiceUrls();
-    const serial = await setupMockDeviceAndConfig(request);
+    const { backend_url, agent_url, llm_url } = readServiceUrls();
+    const serial = await setupMockDeviceAndConfig(request, page);
     const chatUrl = `/chat?serial=${encodeURIComponent(serial)}&mode=classic`;
 
     // --- Seed two workflows via API ---
@@ -378,6 +436,18 @@ test.describe('Docs screenshots', () => {
       console.log('[seed] load_scenario failed:', String(e).split('\n')[0]);
     }
 
+    // Model responses are shared by the E2E stack. Own this scenario instead
+    // of inheriting a previous spec's long-running cancellation response.
+    const modelResponses = await request.post(`${llm_url}/test/set_responses`, {
+      data: [
+        '正在检查屏幕上的消息入口。 '.repeat(350) +
+          'do(action="Tap", element=[499,966])',
+        '已进入消息页面。finish(message="已成功点击消息按钮！")',
+      ],
+    });
+    expect(modelResponses.ok(), await modelResponses.text()).toBe(true);
+    expect((await request.post(`${llm_url}/test/reset`)).ok()).toBe(true);
+
     // --- Populated list pages ---
     await shot(page, 'workflows-list', async () => {
       await page.goto('/workflows');
@@ -408,13 +478,30 @@ test.describe('Docs screenshots', () => {
     await shot(page, 'chat-running', async () => {
       await page.goto(chatUrl);
       await expect(page.locator('textarea')).toBeVisible({ timeout: 15000 });
+      const taskResponse = page.waitForResponse(
+        response =>
+          response.request().method() === 'POST' &&
+          response.url().includes('/api/task-sessions/') &&
+          response.url().endsWith('/tasks')
+      );
       await page.locator('textarea').fill('点击屏幕下方的消息按钮');
       await page.locator('textarea').press('Meta+Enter');
+      const response = await taskResponse;
+      expect(response.ok(), await response.text()).toBe(true);
+      submittedTaskIds.push(((await response.json()) as TaskRun).id);
       await page.waitForTimeout(2500);
     });
     // Let it finish, then capture the completed conversation
     await shot(page, 'chat-result', async () => {
-      await page.waitForTimeout(8000);
+      expect(submittedTaskIds).toHaveLength(1);
+      await expect
+        .poll(
+          async () =>
+            (await readTask(request, backend_url, submittedTaskIds[0])).status,
+          { timeout: 30000 }
+        )
+        .toBe('SUCCEEDED');
+      await expect(page.getByTitle('中止对话')).toBeHidden();
     });
 
     // --- Quick-run workflow popover on the chat input ---

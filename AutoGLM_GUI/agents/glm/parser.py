@@ -45,68 +45,34 @@ class GLMParser:
             raise ValueError(f"Failed to parse do action: {e}") from e
 
     def _extract_params(self, action_str: str, function_name: str) -> dict[str, Any]:
-        prefix = f"{function_name}("
-        if not action_str.startswith(prefix):
-            raise ValueError(f"Action does not start with {prefix}")
-
-        params_str = action_str[len(prefix) : -1]
-
-        params: dict[str, Any] = {}
-        current_key = None
-        current_value = ""
-        in_quotes = False
-        quote_char = None
-        bracket_depth = 0
-        i = 0
-
-        while i < len(params_str):
-            char = params_str[i]
-
-            if char in ('"', "'") and (i == 0 or params_str[i - 1] != "\\"):
-                if not in_quotes:
-                    in_quotes = True
-                    quote_char = char
-                elif char == quote_char:
-                    in_quotes = False
-                    quote_char = None
-
-            if not in_quotes:
-                if char in ("[", "{"):
-                    bracket_depth += 1
-                elif char in ("]", "}"):
-                    bracket_depth -= 1
-
-                if char == "=" and bracket_depth == 0:
-                    current_key = current_value.strip()
-                    current_value = ""
-                    i += 1
-                    continue
-
-                if char == "," and bracket_depth == 0:
-                    if current_key:
-                        params[current_key] = self._parse_value(current_value.strip())
-                        current_key = None
-                        current_value = ""
-                    i += 1
-                    continue
-
-            current_value += char
-            i += 1
-
-        if current_key:
-            params[current_key] = self._parse_value(current_value.strip())
-
-        return params
-
-    def _parse_value(
-        self, value_str: str
-    ) -> str | int | float | bool | list[Any] | dict[str, Any] | None:
-        value_str = value_str.strip()
-
-        if not value_str:
-            return ""
-
         try:
-            return ast.literal_eval(value_str)  # type: ignore[no-any-return]
-        except (ValueError, SyntaxError):
-            return value_str
+            expression = ast.parse(action_str, mode="eval").body
+        except SyntaxError as exc:
+            raise ValueError("Malformed action call") from exc
+        if (
+            not isinstance(expression, ast.Call)
+            or not isinstance(expression.func, ast.Name)
+            or expression.func.id != function_name
+            or expression.args
+        ):
+            raise ValueError(f"Expected {function_name}(keyword=value, ...) call")
+        params: dict[str, Any] = {}
+        for keyword in expression.keywords:
+            if keyword.arg is None or keyword.arg in params:
+                raise ValueError("Expanded or duplicate arguments are not supported")
+            try:
+                value = ast.literal_eval(keyword.value)
+            except (ValueError, SyntaxError) as exc:
+                # Existing GLM examples use bare identifiers such as message=ok.
+                # Preserve these strings without accepting executable expressions.
+                if isinstance(keyword.value, ast.Name):
+                    value = keyword.value.id
+                else:
+                    raise ValueError("Action arguments must be literal values") from exc
+            params[keyword.arg] = value
+        if function_name == "finish" and (
+            set(params) - {"message"}
+            or not isinstance(params.get("message", "Task completed"), str)
+        ):
+            raise ValueError("finish accepts only a text message")
+        return params

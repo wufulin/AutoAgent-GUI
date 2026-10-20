@@ -39,7 +39,11 @@ class AsyncAgent(Protocol):
         ...
 
     def stream(
-        self, task: str, *, continue_with: str | None = None
+        self,
+        task: str,
+        *,
+        continue_with: str | None = None,
+        step_budget: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式执行任务，返回异步生成器。
 
@@ -51,7 +55,9 @@ class AsyncAgent(Protocol):
         事件类型:
         - "thinking": {"chunk": str} - 思考过程片段
         - "step": {"step": int, "thinking": str, "action": dict, ...} - 步骤完成
-        - "done": {"message": str, "steps": int, "success": bool} - 任务完成
+        - "done": {"message": str, "steps": int, "success": bool,
+                   "status": str, "stop_reason": str} - 执行终态；完成申请仍需目标验证
+        - "takeover": {"message": str, "status": "needs_user"} - 等待人工输入
         - "cancelled": {"message": str} - 任务取消
         - "error": {"message": str} - 错误
 

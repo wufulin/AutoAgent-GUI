@@ -56,8 +56,6 @@ export const zh = {
     deepModeDesc: '深度思考，适合复杂任务',
     agentType: 'Agent 类型',
     selectAgentType: '选择 Agent 类型',
-    history_n: '历史记录数量',
-    history_n_hint: '包含的历史截图数量（1-10）',
     maxSteps: '最大执行步数',
     maxStepsHint: '单次任务最大执行步数（1-1000）',
     visionModelTab: '视觉模型',
@@ -80,12 +78,11 @@ export const zh = {
     temperature: '采样温度',
     temperatureHint:
       '采样温度（0-2）。GLM / AutoGLM 系列建议 0；Kimi K3 系列必须为 1，否则接口报错。',
+    unsupportedAgent: '当前执行器已停用，请选择 GLM、General Vision 或 Qwen。',
+    configureExecutor: '选择执行器',
     agentGlmDesc: '基于 GLM 模型优化，成熟稳定，适合大多数任务',
-    agentMaiDesc: '阿里通义团队开发，支持多张历史截图上下文',
     agentGeminiDesc:
       '通用视觉模型，支持 Gemini/GPT-4o 等，使用 Function Calling',
-    agentDroidrunDesc: '基于 DroidRun 框架，需安装 Portal APK',
-    agentMidsceneDesc: '基于 Midscene.js 视觉驱动，需要 Node.js 环境',
     agentQwenDesc: 'Qwen3.6系列适配',
   },
   deviceSidebar: {
@@ -434,6 +431,25 @@ export const zh = {
     selectWorkflow: '选择 Workflow',
   },
   chatkit: {
+    status: {
+      completed: '已验证完成',
+      partial: '部分完成',
+      blocked: '当前受阻',
+      failed: '执行失败',
+      cancelled: '已取消',
+      needs_user: '等待你处理',
+      unknown: '结果待确认',
+    },
+    phase: { executing: '正在执行', verifying: '正在验证' },
+    verdict: { met: '满足', unmet: '未满足', unknown: '无法确认' },
+    totalSteps: '累计 {count} 步',
+    verificationDetails: '查看验证结果',
+    noVerification: '尚无完成条件的验证结果。',
+    observedAt: '观察时间',
+    stopReason: '停止原因',
+    newTaskAfterTakeover:
+      '请先完成所需操作，再描述当前状态并提交新任务。新任务会重新观察设备，不恢复上次执行。',
+    unknownOutcomeHint: '先核对设备当前状态，避免重复提交已执行的操作。',
     title: 'AI 助手',
     layeredAgent: '自动规划',
     layeredAgentDesc:
@@ -443,7 +459,6 @@ export const zh = {
     layeredMode: '分层代理',
     classicModeDesc: '视觉模型直接执行任务',
     layeredModeDesc: '规划层分解任务，执行层独立完成子任务',
-    maiUIModeDesc: '阿里云 MAI-UI 模型，开源高性能 GUI Agent',
   },
   historyPage: {
     title: '对话历史',

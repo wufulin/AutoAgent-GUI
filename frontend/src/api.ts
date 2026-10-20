@@ -691,6 +691,7 @@ export interface ConfigResponse {
   temperature: number;
   // Agent 类型配置
   agent_type?: string;
+  agent_type_supported?: boolean;
   agent_config_params?: Record<string, unknown>;
   // Agent 执行配置
   default_max_steps: number | null;
@@ -969,6 +970,37 @@ export interface TaskEventListResponse {
   events: TaskEventRecordResponse[];
 }
 
+export type SubtaskStatus =
+  | 'completed'
+  | 'partial'
+  | 'blocked'
+  | 'failed'
+  | 'cancelled'
+  | 'needs_user'
+  | 'unknown';
+
+export interface SubtaskResult {
+  subtask_id: string;
+  goal: string;
+  status: SubtaskStatus;
+  message: string;
+  stop_reason: string;
+  steps: number;
+  total_steps: number;
+  success_criteria: string[];
+  verification?: {
+    criteria: {
+      criterion: string;
+      verdict: 'met' | 'unmet' | 'unknown';
+      reason: string;
+    }[];
+    facts: string[];
+    observed_at?: string;
+    screenshot_sha256?: string;
+  } | null;
+  checkpoint?: string | null;
+}
+
 export interface TaskImageAttachment {
   mime_type: string;
   data: string;
@@ -1135,6 +1167,8 @@ export interface HistoryRecordResponse {
   task_text: string;
   final_message: string;
   success: boolean;
+  result_status?: SubtaskStatus | null;
+  stop_reason?: string | null;
   steps: number;
   start_time: string;
   end_time: string | null;

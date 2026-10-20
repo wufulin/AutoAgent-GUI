@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI
@@ -122,6 +125,12 @@ class FakePhoneAgentManager:
 
     async def destroy_agent_async(self, device_id: str) -> None:
         self.destroy_agent(device_id)
+
+    @contextmanager
+    def configuration_update(self):
+        if self.acquire_mode == "busy":
+            raise DeviceBusyError("Stop active tasks before changing configuration")
+        yield
 
     def destroy_all_agents(self) -> int:
         """销毁所有 Agent，返回销毁数量."""
@@ -628,3 +637,77 @@ def test_delete_config_success_and_failure(env: dict[str, Any]) -> None:
     failed_resp = env["client"].delete("/api/config")
     assert failed_resp.status_code == 500
     assert failed_resp.json()["detail"] == "500: Failed to delete config"
+
+
+@pytest.mark.parametrize("busy", [True, False])
+def test_delete_config_respects_busy_guard_without_runtime_side_effects(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, busy: bool
+) -> None:
+    path = env["tmp_path"] / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "base_url": "https://model.example/v1",
+                "model_name": "configured-model",
+                "agent_type": "qwen",
+            }
+        )
+    )
+    original_file = path.read_bytes()
+    monkeypatch.setattr(config_manager_module.UnifiedConfigManager, "_instance", None)
+    monkeypatch.setattr(
+        config_manager_module.UnifiedConfigManager, "_config_path", path
+    )
+    manager = config_manager_module.UnifiedConfigManager()
+    manager.load_file_config(force_reload=True)
+    original_config = manager.get_effective_config().model_dump()
+    delete = Mock(wraps=manager.delete_file_config)
+    sync = Mock(wraps=manager.sync_to_env)
+    monkeypatch.setattr(manager, "delete_file_config", delete)
+    monkeypatch.setattr(manager, "sync_to_env", sync)
+    monkeypatch.setattr(config_manager_module, "config_manager", manager)
+    env["phone_manager"].acquire_mode = "busy" if busy else "ok"
+    env["phone_manager"].destroy_candidates = ["existing-agent"]
+    original_environment = dict(os.environ)
+
+    response = env["client"].delete("/api/config")
+
+    if busy:
+        assert response.status_code == 409
+        assert path.read_bytes() == original_file
+        assert manager.get_effective_config().model_dump() == original_config
+        delete.assert_not_called()
+    else:
+        assert response.status_code == 200
+        assert not path.exists()
+        delete.assert_called_once_with()
+    sync.assert_not_called()
+    assert dict(os.environ) == original_environment
+    assert env["phone_manager"].destroy_candidates == ["existing-agent"]
+    assert env["phone_manager"].destroy_all_count == 0
+    assert env["phone_manager"].destroy_calls == []
+
+
+def test_save_config_while_busy_does_not_write_or_destroy(env: dict[str, Any]) -> None:
+    env["phone_manager"].acquire_mode = "busy"
+    response = env["client"].post(
+        "/api/config",
+        json={"base_url": "http://localhost:8080/v1", "model_name": "autoglm-phone-9b"},
+    )
+    assert response.status_code == 409
+    assert env["config_manager"].save_kwargs is None
+    assert env["config_manager"].sync_called is False
+    assert env["phone_manager"].destroy_all_count == 0
+
+
+def test_save_config_normalizes_original_glm_name(env: dict[str, Any]) -> None:
+    response = env["client"].post(
+        "/api/config",
+        json={
+            "base_url": "http://localhost:8080/v1",
+            "model_name": "autoglm-phone-9b",
+            "agent_type": "glm",
+        },
+    )
+    assert response.status_code == 200
+    assert env["config_manager"].save_kwargs["agent_type"] == "glm-async"

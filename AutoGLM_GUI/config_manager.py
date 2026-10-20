@@ -24,6 +24,7 @@ from pydantic import BaseModel, field_validator
 from typing_extensions import TypedDict
 
 from AutoGLM_GUI.logger import logger
+from AutoGLM_GUI.types import SUPPORTED_AGENT_TYPES, normalize_agent_type
 
 
 LAYERED_MAX_TURNS_DEFAULT = 50
@@ -81,7 +82,8 @@ class ConfigModel(BaseModel):
     temperature: float = TEMPERATURE_DEFAULT
 
     # Agent 类型配置
-    agent_type: str = "glm-async"  # Agent type (e.g., "glm-async", "mai")
+    # Preserve old values on read so unsupported configurations remain repairable.
+    agent_type: str = "glm-async"
     agent_config_params: dict[str, Any] | None = None  # Agent-specific configuration
 
     # Agent 执行配置
@@ -93,6 +95,15 @@ class ConfigModel(BaseModel):
     decision_base_url: str | None = None
     decision_model_name: str | None = None
     decision_api_key: str | None = None
+
+    @property
+    def agent_type_supported(self) -> bool:
+        return self.agent_type in SUPPORTED_AGENT_TYPES
+
+    @field_validator("agent_type")
+    @classmethod
+    def normalize_agent_type(cls, value: str) -> str:
+        return normalize_agent_type(value)
 
     @field_validator("default_max_steps")
     @classmethod
@@ -507,7 +518,7 @@ class UnifiedConfigManager:
             model_name: 模型名称
             api_key: API key（可选）
             temperature: 采样温度（可选，None 表示保留文件中已有的值）
-            agent_type: Agent 类型（可选，如 "glm-async", "mai"）
+            agent_type: Agent 类型（可选，如 "glm-async", "qwen", "gemini"）
             agent_config_params: Agent 特定配置参数（可选）
             default_max_steps: 默认最大执行步数（可选）
             layered_max_turns: 分层代理最大轮数（可选）
@@ -520,9 +531,6 @@ class UnifiedConfigManager:
             bool: 成功返回 True，失败返回 False
         """
         try:
-            # 确保目录存在
-            self._config_path.parent.mkdir(parents=True, exist_ok=True)
-
             # 准备新配置
             new_config: ConfigFileData = {
                 "base_url": base_url,
@@ -554,11 +562,16 @@ class UnifiedConfigManager:
             if decision_api_key is not None:
                 new_config["decision_api_key"] = decision_api_key
 
+            previous_agent_type = self.get_effective_config().agent_type
+
             # 合并模式：保留现有文件中未提供的字段
             if merge_mode and self._config_path.exists():
                 try:
                     with open(self._config_path, encoding="utf-8") as f:
                         existing = json.load(f)
+                    previous_agent_type = existing.get(
+                        "agent_type", previous_agent_type
+                    )
 
                     # 保留未提供的字段
                     preserve_keys = [
@@ -579,7 +592,22 @@ class UnifiedConfigManager:
                 except (json.JSONDecodeError, Exception) as e:
                     logger.warning(f"Could not merge with existing config: {e}")
 
+            resolved_agent_type = normalize_agent_type(
+                new_config.get("agent_type", "glm-async")
+            )
+            if resolved_agent_type not in SUPPORTED_AGENT_TYPES:
+                raise ValueError(
+                    f"Agent type '{resolved_agent_type}' is not supported. "
+                    "Select glm-async, qwen, or gemini in settings."
+                )
+            new_config["agent_type"] = resolved_agent_type
+            if resolved_agent_type != normalize_agent_type(previous_agent_type):
+                # Never carry removed or unrelated executor options across a switch,
+                # even if an older client sends them alongside the new selection.
+                new_config["agent_config_params"] = {}
+
             # 原子写入：临时文件 + 重命名
+            self._config_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = self._config_path.with_suffix(".tmp")
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(new_config, f, indent=2, ensure_ascii=False)
