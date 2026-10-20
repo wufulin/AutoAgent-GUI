@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import time
 from typing import Any
 
@@ -12,7 +13,7 @@ from typing_extensions import TypedDict
 import socketio
 
 from AutoGLM_GUI.logger import logger
-from AutoGLM_GUI.scrcpy_protocol import ScrcpyMediaStreamPacket
+from AutoGLM_GUI.scrcpy_protocol import SCRCPY_CODEC_NAME_TO_ID, ScrcpyMediaStreamPacket
 from AutoGLM_GUI.scrcpy_stream import ScrcpyStreamer
 from AutoGLM_GUI.scrcpy_control import ControlCommand, ControlSession
 
@@ -185,20 +186,50 @@ async def stop_streamers_async(device_id: str | None = None) -> None:
             await _stop_stream_for_sid(sid, expected=streamer)
 
 
-async def _stream_packets(sid: str, streamer: ScrcpyStreamer) -> None:
+async def _stream_packets(
+    sid: str, streamer: ScrcpyStreamer, video_window: int = 1
+) -> None:
+    pending: deque[tuple[asyncio.Future[None], float]] = deque()
+
+    async def wait_for_frame() -> None:
+        frame, deadline = pending.popleft()
+        await asyncio.wait_for(
+            frame, timeout=max(0, deadline - asyncio.get_running_loop().time())
+        )
+
     try:
         async for packet in streamer.iter_packets():
             payload = _packet_to_payload(packet)
             session = _control_sessions.get(sid)
             if session:
                 if packet.type == "configuration":
+                    # Reject old input as soon as a geometry change is known,
+                    # then drain old renders before configuring the decoder.
                     session.epoch += 1
+                    while pending:
+                        await wait_for_frame()
                 payload["epoch"] = session.epoch
-                # Bound application/network buffering. The browser ACKs after
-                # decoding/rendering a frame, not merely receiving its bytes.
-                await sio.call("video-data", payload, to=sid, timeout=3)
+                if video_window == 1 or packet.type == "configuration":
+                    await sio.call("video-data", payload, to=sid, timeout=3)
+                else:
+                    # One producer emits complete binary events in order. Allow
+                    # a bounded decode pipeline, with an ACK for each render.
+                    rendered = asyncio.get_running_loop().create_future()
+                    pending.append((rendered, asyncio.get_running_loop().time() + 3))
+
+                    def acknowledge(
+                        *_: Any, frame: asyncio.Future[None] = rendered
+                    ) -> None:
+                        if not frame.done():
+                            frame.set_result(None)
+
+                    await sio.emit("video-data", payload, to=sid, callback=acknowledge)
+                    if len(pending) >= video_window:
+                        await wait_for_frame()
             else:
                 await sio.emit("video-data", payload, to=sid)
+        while pending:
+            await wait_for_frame()
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -210,6 +241,8 @@ async def _stream_packets(sid: str, streamer: ScrcpyStreamer) -> None:
                 "Failed to emit Socket.IO stream error to %s: %s", sid, emit_exc
             )
     finally:
+        for frame, _ in pending:
+            frame.cancel()
         await _stop_stream_for_sid(sid, expected=streamer)
 
 
@@ -259,6 +292,7 @@ async def connect_device(sid: str, data: dict[str, Any] | None) -> None:
         max_size = max(320, min(1920, int(payload.get("maxSize") or 1280)))
         bit_rate = max(1000, min(8_000_000, int(payload.get("bitRate") or 4_000_000)))
         max_fps = max(10, min(60, int(payload.get("maxFps") or 20)))
+        video_window = max(1, min(4, int(payload.get("videoWindow") or 1)))
     except (TypeError, ValueError):
         await sio.emit("error", {"message": "Invalid video options"}, to=sid)
         return
@@ -311,6 +345,9 @@ async def connect_device(sid: str, data: dict[str, Any] | None) -> None:
             metadata = await asyncio.wait_for(
                 streamer.read_video_metadata(), timeout=10
             )
+            # Older clients and non-H.264 decoders retain one-frame flow control.
+            if not controlled or metadata.codec != SCRCPY_CODEC_NAME_TO_ID["h264"]:
+                video_window = 1
             if _startup_tokens.get(sid) is not token:
                 streamer.stop()
                 return
@@ -344,7 +381,9 @@ async def connect_device(sid: str, data: dict[str, Any] | None) -> None:
                 return
             if session:
                 _watchdogs[sid] = asyncio.create_task(_watch_control(sid, session))
-            _stream_tasks[sid] = asyncio.create_task(_stream_packets(sid, streamer))
+            _stream_tasks[sid] = asyncio.create_task(
+                _stream_packets(sid, streamer, video_window)
+            )
 
         except BaseException as exc:
             await _stop_stream_for_sid(sid, expected=streamer)
