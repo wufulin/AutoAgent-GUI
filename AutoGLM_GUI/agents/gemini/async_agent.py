@@ -357,6 +357,12 @@ class AsyncGeminiAgent(AsyncAgentBase):
             temperature=self.model_config.temperature,
             tools=DEVICE_TOOLS,  # type: ignore[arg-type]
             tool_choice="required",
+            # DeepSeek defaults to thinking, which rejects required tool choice.
+            extra_body=(
+                {**self.model_config.extra_body, "thinking": {"type": "disabled"}}
+                if self.model_config.model_name == "deepseek-flash"
+                else self.model_config.extra_body or None
+            ),
         )
 
         choice = response.choices[0]

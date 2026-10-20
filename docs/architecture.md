@@ -71,6 +71,8 @@ HTTP Remote 并存。`DeviceManager` 只在登录、手机配置、HID 和首张
 
 自动规划需要视觉模型和决策模型。已加载配置但缺少决策模型地址或名称时，聊天区先提示配置，并可打开高级设置选择直接执行，不提供任务提交输入。API Key 是否必需仍由所用服务决定。直接执行只需要原有执行模型配置。
 
+视觉模型与决策模型页签均提供 `DeepSeek V4.1 Flash` 预设，填入官方 OpenAI 兼容地址 `https://api.deepseek.com` 与模型 ID `deepseek-flash`。视觉预设同时选择 `General Vision Agent`（`agent_type=gemini`）并清空其他 Agent 的专用参数，复用现有图片输入与 function calling 路径；决策预设只修改决策地址和模型名称。两个 API Key 输入框由用户分别配置，预设不提供密钥。选择后仍需保存，取消或关闭会恢复原配置，不改变未选择预设的现有配置与默认值。官方接口与图片输入说明见 [API 文档](https://api-docs.deepseek.com/) 和 [Vision 指南](https://api-docs.deepseek.com/guides/vision/)。`deepseek-flash` 的视觉与规划请求均显式关闭 DeepSeek 思考模式：视觉端保持强制工具调用（思考模式不支持 `tool_choice=required`），规划端避免现有 Chat Completions 会话丢失 `reasoning_content` 导致多轮工具调用失败。其他模型沿用原有行为。本次不增加公共 API 或数据库迁移；回滚前端即可移除预设，已保存配置仍可作为自定义服务使用。真实 DeepSeek 调用与真机执行需在用户配置密钥后另行验证。
+
 后端会话 API、MCP 的 `mode` 缺省值及定时任务 `execution_mode` 保持原有兼容语义，不因聊天 UI 选择发生迁移。两种执行方式继续按原来的独立会话键恢复。配置服务请求失败时保留现有配置对话框处理方式，不自动切换执行方式。
 
 本次调整不改变执行算法或手机控制协议。浏览器回归验证默认分层会话、保存/取消、刷新恢复、旧链接、缺少决策模型的提示与直接执行入口；原有直接执行任务、图片输入及接管恢复测试继续运行。回滚前端版本可恢复顶部切换，不需数据库迁移。上述测试不代表两个模式的真机成功率或性能对比。
