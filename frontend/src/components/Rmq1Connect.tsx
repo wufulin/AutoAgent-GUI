@@ -49,7 +49,7 @@ export function Rmq1Connect({ onConnected }: { onConnected: () => void }) {
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
         用 RMQ1 的 USB-C 连接支持视频输出的 iPhone。先在 RMQ1
-        控制台设置手机型号、 方向和绝对鼠标，并在 iPhone
+        控制台设置手机型号、方向和混合鼠标（也支持绝对鼠标），并在 iPhone
         启用辅助触控。当前支持画面预览、点击和松开后执行的滑动。
       </p>
       <div className="space-y-2">
@@ -88,7 +88,7 @@ export function Rmq1Connect({ onConnected }: { onConnected: () => void }) {
             我已通过可信的 RMQ1 控制台核对证书指纹
           </label>
           <div className="space-y-2">
-            <Label htmlFor="rmq1-user">用户名</Label>
+            <Label htmlFor="rmq1-user">用户名（默认 admin，无需修改）</Label>
             <Input
               id="rmq1-user"
               autoComplete="username"

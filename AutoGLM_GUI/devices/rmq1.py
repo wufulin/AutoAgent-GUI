@@ -111,6 +111,7 @@ class RMQ1Device:
         self._control: Any = None
         self._control_worker: threading.Thread | None = None
         self._hid_state: dict[str, Any] = {}
+        self._mouse_output: str | None = None
         self._frames_lock = threading.Condition()
         self._stop = threading.Event()
         self._video: Any = None
@@ -143,17 +144,22 @@ class RMQ1Device:
     def check_hid(self) -> None:
         self._check_hid_state(self.transport.result("/api/hid"))
 
-    @staticmethod
-    def _check_hid_state(hid: dict[str, Any]) -> None:
+    def _check_hid_state(self, hid: dict[str, Any]) -> None:
         mouse = hid.get("mouse", {})
-        # Hybrid/relative/touch outputs have different coordinate semantics.
+        output = mouse.get("outputs", {}).get("active")
+        if self._mouse_output is not None and output != self._mouse_output:
+            self._issue = "RMQ1 鼠标模式已变化，请重新连接"
+            raise RMQ1Error(self._issue)
+        # Hybrid keeps absolute positioning, but routes buttons separately.
+        # Relative and touch outputs require different input semantics.
         if not (
             hid.get("connected") is True
             and mouse.get("online") is True
             and mouse.get("absolute") is True
-            and mouse.get("outputs", {}).get("active") == "usb"
+            and output in ("usb", "usb_hybrid")
         ):
-            raise RMQ1Error("请在 RMQ1 控制台启用绝对鼠标（usb），并确认 iPhone 已连接")
+            raise RMQ1Error("请在 RMQ1 控制台启用绝对或混合鼠标，并确认 iPhone 已连接")
+        self._mouse_output = output
 
     def start(self) -> None:
         self.geometry()
@@ -350,6 +356,23 @@ class RMQ1Device:
                 self._actions[action_id] = (signature, result)
                 try:
                     self._move(control, first)
+                    if self._mouse_output == "usb_hybrid":
+                        # iOS must consume absolute motion before a button on
+                        # the hybrid device's separate USB endpoint. This is
+                        # pacing, not an acknowledgment from the phone.
+                        time.sleep(0.08)
+                        self.check_hid()
+                        current_geometry = self.geometry()
+                        control.send(json.dumps({"event_type": "ping", "event": {}}))
+                        self._await_control_event(control, "pong", self._hid_state)
+                        if (
+                            not self.online
+                            or time.monotonic() - frame.at >= 3
+                            or current_geometry != geometry
+                            or not self._latest
+                            or self._latest[2:] != (frame.width, frame.height)
+                        ):
+                            raise RMQ1Error("画面或输入状态已变化，请等待新画面")
                     control.send(b"\x02\x01left")
                     steps = max(1, round(duration_ms / 30)) if end else 1
                     for n in range(1, steps + 1):
