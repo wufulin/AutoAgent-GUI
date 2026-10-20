@@ -66,14 +66,19 @@ class Geometry:
             orientation = "landscape_system_portrait"
         return cls(width, height, orientation)
 
+    def content_rect(self, frame_width: int, frame_height: int) -> dict[str, float]:
+        """Visible phone bounds in normalized, unrotated capture coordinates."""
+        scale = min(frame_width / self.width, frame_height / self.height)
+        w, h = self.width * scale / frame_width, self.height * scale / frame_height
+        return {"x": (1 - w) / 2, "y": (1 - h) / 2, "width": w, "height": h}
+
     def map_point(
         self, x: float, y: float, frame_width: int, frame_height: int
     ) -> tuple[float, float]:
         if not (0 <= x <= 1 and 0 <= y <= 1):
             raise RMQ1Error("坐标超出画面")
-        scale = min(frame_width / self.width, frame_height / self.height)
-        w, h = self.width * scale / frame_width, self.height * scale / frame_height
-        x, y = (x - 0.5) / w + 0.5, (y - 0.5) / h + 0.5
+        rect = self.content_rect(frame_width, frame_height)
+        x, y = (x - 0.5) / rect["width"] + 0.5, (y - 0.5) / rect["height"] + 0.5
         if not (0 <= x <= 1 and 0 <= y <= 1):
             raise RMQ1Error("请在手机画面内操作，不能点击黑边")
         if self.orientation in (
@@ -273,6 +278,7 @@ class RMQ1Device:
                 "image": image,
                 "width": width,
                 "height": height,
+                "content_rect": geometry.content_rect(width, height),
                 "session_id": self.session_id,
                 "frame_id": frame_id,
                 "recovery_required": self.recovery_required,

@@ -176,6 +176,33 @@ def test_geometry_removes_black_bars_and_rotates():
         Geometry.parse({"remote_device_settings": {"type": "computer_or_other"}})
 
 
+@pytest.mark.parametrize(
+    "phone, capture, expected",
+    [
+        ((100, 200), (1920, 1080), (0.359375, 0, 0.28125, 1)),
+        ((200, 100), (1080, 1920), (0, 0.359375, 1, 0.28125)),
+        ((100, 200), (100, 200), (0, 0, 1, 1)),
+    ],
+)
+def test_observation_exposes_phone_region_without_changing_input_coordinates(
+    device, phone, capture, expected
+):
+    device.transport.config["remote_device_settings"]["ratio"] = list(reversed(phone))
+    at, image, _, _ = device._latest
+    device._latest = (at, image, *capture)
+    observation = device.observe()
+    rect = observation["content_rect"]
+    assert tuple(rect[k] for k in ("x", "y", "width", "height")) == pytest.approx(
+        expected
+    )
+    assert (observation["width"], observation["height"]) == capture
+    assert observation["image"] == image
+    geometry = device.geometry()
+    for x, y in ((0.1, 0.2), (0.9, 0.8), (0.5, 0.5)):
+        raw = (rect["x"] + x * rect["width"], rect["y"] + y * rect["height"])
+        assert geometry.map_point(*raw, *capture) == pytest.approx((x, y))
+
+
 def test_tap_deduplicates_original_action_and_releases(device):
     args = gesture_args(device)
     first = device.gesture(**args)

@@ -22,10 +22,18 @@ ADB 的本地服务；保留验收实例的隔离设置，避免测试意外访�
 新增 `connection_type=rmq1`、`platform=ios`，在设备列表中与 USB、WiFi、
 HTTP Remote 并存。`DeviceManager` 只在登录、手机配置、HID 和首张画面检查通过后
 注册连接；ADB 轮询不移除 RMQ1，列表状态来自视频新鲜度。删除连接及服务停止时
-关闭视频线程并清除内存凭据。当前 RMQ1 专用面板支持预览与有界手动操作，
+关闭视频线程并清除内存凭据。当前 RMQ1 页面沿用设备列表、AI 对话区、手机画面的布局；`Rmq1ChatPanel`
+仅呈现明确禁用的对话入口，不挂载 Android 的任务会话或调用模型。右侧
+`Rmq1Panel` 支持预览与有界手动操作，
 `DeviceProtocol` 的 AI 初始化和旧 ADB 控制、scrcpy 入口显式拒绝 RMQ1。
 
 浏览器通过 `/api/rmq1/{probe,connect,disconnect,observe,gesture,recover}` 与后端交互。
+`observe` 附带同一帧几何对应的 `content_rect`（归一化采集画面坐标，包含
+`x/y/width/height`）。前端默认裁去黑边，缩放完整原图后在此区域内显示；手动
+操作仍提交原始采集画面的归一化坐标，后端继续校验帧、会话、几何与黑边。
+旧服务未返回有效区域时显示完整画面；显示设置可切换完整画面和调整栏宽。
+缩放窗口或切换显示设置会取消尚未提交的手势。窄内容区改为上下排列并可滚动。
+未来 AI 接入仍需独立实现 iPhone 执行能力与授权，不因界面统一而启用 Android 路径。
 `RMQ1Transport` 只访问私有 IPv4 的 443 端口，在每次 TLS 连接发送密码或 cookie
 前核对叶证书 SHA-256，不跟随重定向。密码、cookie 不持久化。
 `RMQ1Device` 先建立持续的 `/api/ws` 会话启动按需推流，再从 `/api/media/ws`
