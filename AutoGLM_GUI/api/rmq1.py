@@ -128,12 +128,26 @@ async def disconnect(request: DeviceRequest) -> dict[str, bool]:
 
 
 @router.post("/reconnect")
-def reconnect(request: DeviceRequest) -> dict[str, Any]:
+async def reconnect(request: DeviceRequest) -> dict[str, Any]:
+    manager = PhoneAgentManager.get_instance()
+    owner = f"rmq1-reconnect:{uuid4().hex}"
     try:
-        session_id = DeviceManager.get_instance().reconnect_rmq1_device(
-            request.device_id
-        )
-        return {"success": True, "session_id": session_id}
+        await manager.acquire_manual_control(request.device_id, owner)
+
+        async def perform() -> dict[str, Any]:
+            try:
+                session_id = await asyncio.to_thread(
+                    DeviceManager.get_instance().reconnect_rmq1_device,
+                    request.device_id,
+                )
+                return {"success": True, "session_id": session_id}
+            finally:
+                await manager.release_manual_control(request.device_id, owner)
+
+        task = asyncio.create_task(perform())
+        _manual_operations.add(task)
+        task.add_done_callback(_manual_finished)
+        return await asyncio.shield(task)
     except Exception as error:
         raise safe_error(error) from None
 

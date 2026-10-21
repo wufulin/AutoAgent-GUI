@@ -816,6 +816,84 @@ def test_manager_reconnect_keeps_registration_and_api_redacts_errors(
         assert manager.get_rmq1_device(device.device_id) is replacement
 
 
+@pytest.mark.parametrize("blocked_by", ["ai", "manual", "unknown"])
+def test_reconnect_respects_shared_control_authority(device, monkeypatch, blocked_by):
+    import asyncio
+    from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
+
+    manager = PhoneAgentManager()
+    monkeypatch.setattr(PhoneAgentManager, "get_instance", lambda: manager)
+    reconnect_device = Mock(return_value="b" * 32)
+    monkeypatch.setattr(
+        DeviceManager,
+        "get_instance",
+        lambda: SimpleNamespace(reconnect_rmq1_device=reconnect_device),
+    )
+    if blocked_by == "ai":
+        asyncio.run(manager.acquire_device_lease(device.device_id, "task"))
+    elif blocked_by == "manual":
+        asyncio.run(manager.acquire_manual_control(device.device_id, "other"))
+    else:
+        asyncio.run(manager.quarantine_manual_control(device.device_id, "unknown"))
+    app = FastAPI()
+    app.include_router(api.router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/rmq1/reconnect", json={"device_id": device.device_id}
+        )
+    assert response.status_code == 409
+    reconnect_device.assert_not_called()
+    if blocked_by == "unknown":
+        assert device.device_id in manager._manual_uncertain
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_cancelled_reconnect_keeps_authority_until_worker_settles(
+    device, monkeypatch, failed
+):
+    import asyncio
+    import threading
+    from AutoGLM_GUI.exceptions import DeviceBusyError
+    from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
+
+    manager = PhoneAgentManager()
+    monkeypatch.setattr(PhoneAgentManager, "get_instance", lambda: manager)
+    entered, finish = threading.Event(), threading.Event()
+
+    def reconnect_device(_):
+        entered.set()
+        assert finish.wait(5)
+        if failed:
+            raise RMQ1Error("fixture reconnect failure")
+        return "b" * 32
+
+    monkeypatch.setattr(
+        DeviceManager,
+        "get_instance",
+        lambda: SimpleNamespace(reconnect_rmq1_device=reconnect_device),
+    )
+
+    async def run():
+        request = asyncio.create_task(
+            api.reconnect(api.DeviceRequest(device_id=device.device_id))
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            workers = set(api._manual_operations)
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            with pytest.raises(DeviceBusyError):
+                await manager.acquire_manual_control(device.device_id, "other")
+        finally:
+            finish.set()
+        await asyncio.gather(*workers, return_exceptions=True)
+        assert device.device_id not in manager._manual_owners
+        assert device.device_id not in manager._manual_uncertain
+
+    asyncio.run(run())
+
+
 def live_gesture(device, **overrides):
     from AutoGLM_GUI.devices.rmq1_live import LiveGesture
     import queue
