@@ -18,7 +18,7 @@ from AutoGLM_GUI.agents.gemini.async_agent import AsyncGeminiAgent
 from AutoGLM_GUI.agents.gemini.screen_guard import compare_modal_transition
 from AutoGLM_GUI.agents.gemini.tools import (
     DEVICE_TOOLS,
-    PHYSICAL_TOOL_NAMES,
+    VERIFICATION_HANDOFF_TOOLS,
     get_device_tools,
 )
 from AutoGLM_GUI.config import AgentConfig, ModelConfig
@@ -95,12 +95,12 @@ async def _single_step(agent: _Agent):
     return [event async for event in agent._execute_step()][-1]["data"]
 
 
-def test_completion_handoff_is_only_declared_in_independent_physical_tools():
+def test_completion_handoff_is_only_declared_for_independent_text_entry():
     tools = get_device_tools(independent_verification=True)
     for tool in tools:
         function = tool["function"]
         assert ("verify_after" in function["parameters"]["properties"]) == (
-            function["name"] in PHYSICAL_TOOL_NAMES
+            function["name"] in VERIFICATION_HANDOFF_TOOLS
         )
     assert all(
         "verify_after" not in t["function"]["parameters"]["properties"]
@@ -112,24 +112,66 @@ def test_completion_handoff_is_only_declared_in_independent_physical_tools():
 def test_verify_after_requires_an_actual_boolean(value):
     with pytest.raises(InvalidToolCallError, match="Expected boolean"):
         tool_call_to_action(
-            "back", {"verify_after": value}, independent_verification=True
+            "type_text",
+            {"text": "测试", "verify_after": value},
+            independent_verification=True,
         )
 
 
 @pytest.mark.parametrize(
-    "name, independent", [("back", False), ("finish", True), ("wait", True)]
+    "name, independent",
+    [("type_text", False)]
+    + [
+        (name, True)
+        for name in (
+            "back",
+            "home",
+            "tap",
+            "double_tap",
+            "long_press",
+            "swipe",
+            "launch_app",
+            "finish",
+            "wait",
+        )
+    ],
 )
 def test_verify_after_rejected_without_supported_handoff(name, independent):
-    with pytest.raises(InvalidToolCallError, match="independently verified physical"):
+    with pytest.raises(InvalidToolCallError, match="independently verified type_text"):
         tool_call_to_action(
             name, {"verify_after": True}, independent_verification=independent
         )
 
 
+@pytest.mark.parametrize(
+    "lang, expected",
+    [
+        ("en", "ONLY type_text supports verify_after"),
+        ("cn", "只有 type_text 支持 verify_after"),
+    ],
+)
+def test_handoff_prompt_limits_both_languages_to_text_entry(lang, expected):
+    agent = _Agent([])
+    agent.agent_config.lang = lang
+    agent.independent_verification = True
+    assert expected in agent.context[0]["content"]
+
+
+def test_navigation_with_handoff_is_rejected_before_device_write():
+    agent = _Agent([("back", {"verify_after": True})])
+    step = asyncio.run(_single_step(agent))
+    assert step["success"] is False
+    assert step["stop_reason"] == "invalid_tool_arguments"
+    assert agent.action_handler.execute.await_count == 0
+
+
 def test_successful_final_action_requests_verification_without_finish_turn():
     async def run():
         agent = _Agent(
-            [("back", {"verify_after": True}), ("finish", {"message": "unused"})]
+            [
+                ("type_text", {"text": "测试", "verify_after": True}),
+                ("finish", {"message": "unused"}),
+            ]
         )
         events = [event async for event in agent.stream("back then verify")]
         return agent, events
@@ -153,14 +195,16 @@ def test_successful_final_action_requests_verification_without_finish_turn():
     ],
 )
 def test_failed_or_terminal_actions_never_promote_verify_after(result):
-    agent = _Agent([("back", {"verify_after": True})], result=result)
+    agent = _Agent(
+        [("type_text", {"text": "测试", "verify_after": True})], result=result
+    )
     step = asyncio.run(_single_step(agent))
     assert step.get("stop_reason") != "verification_requested"
     assert step["finished"] is result.should_finish
 
 
 def test_unknown_result_cannot_request_verification():
-    agent = _Agent([("back", {"verify_after": True})])
+    agent = _Agent([("type_text", {"text": "测试", "verify_after": True})])
 
     async def execute(*args):
         agent.device._outcome_unknown = True
@@ -195,7 +239,9 @@ def test_post_action_reused_once_but_pre_action_stays_fresh(monkeypatch, tmp_pat
     monkeypatch.setenv("AUTOGLM_TRACE_FILE", str(trace_file))
 
     async def run():
-        agent = _Agent([("back", {}), ("back", {"verify_after": True})])
+        agent = _Agent(
+            [("back", {}), ("type_text", {"text": "测试", "verify_after": True})]
+        )
         events = [event async for event in agent.stream("two actions")]
         return agent, events
 
@@ -271,7 +317,7 @@ def test_cached_observation_does_not_replace_geometry_guard(monkeypatch):
     )
     normal, rotated = _shot(), _shot(Image.new("RGB", (400, 240), "white"))
     agent = _Agent(
-        [("back", {}), ("back", {"verify_after": True})],
+        [("back", {}), ("type_text", {"text": "测试", "verify_after": True})],
         [normal, normal, normal, rotated],
     )
 
@@ -307,7 +353,10 @@ def test_status_bars_and_small_animation_do_not_trigger_modal_guard():
 
 
 def test_modal_guard_prevents_device_write_and_never_promotes_completion():
-    agent = _Agent([("back", {"verify_after": True})], [_modal(), _modal(loaded=True)])
+    agent = _Agent(
+        [("type_text", {"text": "测试", "verify_after": True})],
+        [_modal(), _modal(loaded=True)],
+    )
     # _single_step supplies the observation without consuming a device capture.
     agent.fake_device.captures = 1
     step = asyncio.run(_single_step(agent))
@@ -326,11 +375,11 @@ def test_classic_mode_does_not_apply_modal_heuristic():
 
 
 def test_cancellation_during_inference_prevents_device_write():
-    agent = _Agent([("back", {"verify_after": True})])
+    agent = _Agent([("type_text", {"text": "测试", "verify_after": True})])
 
     async def cancelled_inference():
         await agent.cancel()
-        return "", None, "back", {"verify_after": True}
+        return "", None, "type_text", {"text": "测试", "verify_after": True}
 
     agent._call_llm_with_tools = cancelled_inference
     with pytest.raises(asyncio.CancelledError):
@@ -342,7 +391,9 @@ def test_cancellation_during_inference_prevents_device_write():
 def test_invalid_pre_action_image_fails_closed():
     normal = _shot()
     malformed = Screenshot("not-a-png", normal.width, normal.height)
-    agent = _Agent([("back", {"verify_after": True})], [normal, malformed])
+    agent = _Agent(
+        [("type_text", {"text": "测试", "verify_after": True})], [normal, malformed]
+    )
     agent.fake_device.captures = 1
     step = asyncio.run(_single_step(agent))
     assert agent.action_handler.execute.await_count == 0
@@ -388,7 +439,7 @@ def test_verification_handoff_waits_in_separate_span(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTOGLM_TRACE_FILE", str(trace_file))
     wait = AsyncMock(wraps=asyncio.wait_for)
     monkeypatch.setattr(asyncio, "wait_for", wait)
-    agent = _Agent([("back", {"verify_after": True})])
+    agent = _Agent([("type_text", {"text": "测试", "verify_after": True})])
     agent.verification_settle_seconds = 0.01
     step = asyncio.run(_single_step(agent))
     assert step["stop_reason"] == "verification_requested"
@@ -413,7 +464,7 @@ def test_settle_interruption_never_requests_completion(interruption):
     async def run():
         import threading
 
-        agent = _Agent([("back", {"verify_after": True})])
+        agent = _Agent([("type_text", {"text": "测试", "verify_after": True})])
         agent.verification_settle_seconds = 1.0
         entered = asyncio.Event()
         proceed = asyncio.Event()

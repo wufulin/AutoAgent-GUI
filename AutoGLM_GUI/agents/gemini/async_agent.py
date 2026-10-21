@@ -30,7 +30,11 @@ from AutoGLM_GUI.phone_agent_trace import (
 )
 
 from .action_mapper import InvalidToolCallError, tool_call_to_action
-from .prompts import INDEPENDENT_VERIFICATION_PROMPT, get_system_prompt
+from .prompts import (
+    INDEPENDENT_VERIFICATION_PROMPT,
+    INDEPENDENT_VERIFICATION_PROMPT_ZH,
+    get_system_prompt,
+)
 from .screen_guard import compare_modal_transition
 from .tools import get_device_tools
 
@@ -66,7 +70,11 @@ class AsyncGeminiAgent(AsyncAgentBase):
     def get_system_prompt(self) -> str:
         prompt = super().get_system_prompt()
         if getattr(self, "_independent_verification", False):
-            prompt += INDEPENDENT_VERIFICATION_PROMPT
+            prompt += (
+                INDEPENDENT_VERIFICATION_PROMPT_ZH
+                if self.agent_config.lang == "cn"
+                else INDEPENDENT_VERIFICATION_PROMPT
+            )
         return prompt
 
     def reset(self) -> None:

@@ -8,18 +8,7 @@ from copy import deepcopy
 from typing import Any
 
 
-PHYSICAL_TOOL_NAMES = frozenset(
-    {
-        "tap",
-        "double_tap",
-        "long_press",
-        "swipe",
-        "type_text",
-        "launch_app",
-        "back",
-        "home",
-    }
-)
+VERIFICATION_HANDOFF_TOOLS = frozenset({"type_text"})
 
 
 DEVICE_TOOLS = [
@@ -217,11 +206,11 @@ def get_device_tools(*, independent_verification: bool = False) -> list[dict[str
     tools = deepcopy(DEVICE_TOOLS)
     for tool in tools:
         function = tool["function"]
-        if function["name"] in PHYSICAL_TOOL_NAMES:
+        if function["name"] in VERIFICATION_HANDOFF_TOOLS:
             function["parameters"]["properties"]["verify_after"] = {
                 "type": "boolean",
                 "description": (
-                    "Set true only on the final action expected to meet all subtask "
+                    "Set true only on the final text entry expected to meet all subtask "
                     "criteria. After successful execution, stop and let the independent "
                     "verifier inspect a fresh screenshot. This is not a success claim."
                 ),
