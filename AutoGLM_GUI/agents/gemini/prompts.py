@@ -97,8 +97,12 @@ SYSTEM_PROMPT_ZH = get_system_prompt("cn")
 INDEPENDENT_VERIFICATION_PROMPT = """
 
 # Independent verification handoff
-This bounded subtask has a separate verifier. On the final physical action that you
-expect will satisfy ALL requested criteria, set verify_after=true. Once the action
+This bounded subtask has a separate verifier. ONLY type_text supports verify_after.
+Set verify_after=true on the final text entry only when it is expected to satisfy
+ALL requested criteria. Do not pass verify_after to navigation, tap, launch_app,
+back, home, swipe, wait, or any other tool. For those actions, observe the resulting
+screen on the next turn and call finish() only when the criteria are satisfied.
+Once the final text entry
 succeeds, execution stops and the verifier checks a fresh screenshot; do not spend
 another model turn merely to announce completion. This flag requests verification,
 not success. Use finish() when the goal is already met without another action, or
@@ -109,4 +113,18 @@ after navigation), do not request verification before those actions are done.
 Asynchronous loading may still be incomplete after the final action and its brief
 settling buffer. Only the independent verifier can accept the observed result;
 loading or an action acknowledgment must never be treated as task success.
+"""
+
+INDEPENDENT_VERIFICATION_PROMPT_ZH = """
+
+# 独立验收交接
+当前有界子任务具有独立验收器。只有 type_text 支持 verify_after。
+只有预期最后一次文本输入即可满足全部要求时，才设置 verify_after=true。
+导航、点击、launch_app、back、home、swipe、wait 及其他工具均不能携带 verify_after；
+这些动作后应在下一轮观察新截图，确认条件满足后再调用 finish()。
+最后一次文本输入成功后会停止执行，交由独立验收器检查新截图，无须再花一轮仅宣布输入结束。
+该标志只请求验收，不代表成功。目标已经满足或无法继续时仍可调用 finish()，并说明障碍。
+如要求输入后继续提交、导航或切换特定标签，必须完成后续动作，不得提前请求验收。
+异步加载在输入完成和短暂缓冲后仍可能未就绪；只有独立验收器能够确认结果，
+加载中状态或动作回执均不代表任务成功。不得用此标志隐藏失败或绕过验证码、登录、未知弹窗及安全要求。
 """

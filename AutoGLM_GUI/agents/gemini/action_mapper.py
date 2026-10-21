@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from .tools import PHYSICAL_TOOL_NAMES
+from .tools import VERIFICATION_HANDOFF_TOOLS
 
 
 class InvalidToolCallError(ValueError):
@@ -56,9 +56,12 @@ def tool_call_to_action(
     """
     try:
         if "verify_after" in arguments:
-            if not independent_verification or tool_name not in PHYSICAL_TOOL_NAMES:
+            if (
+                not independent_verification
+                or tool_name not in VERIFICATION_HANDOFF_TOOLS
+            ):
                 raise ValueError(
-                    "verify_after requires an independently verified physical action"
+                    "verify_after requires independently verified type_text"
                 )
             if type(arguments["verify_after"]) is not bool:
                 raise ValueError("Expected boolean for 'verify_after'")
