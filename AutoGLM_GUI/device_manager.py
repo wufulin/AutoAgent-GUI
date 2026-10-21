@@ -1200,7 +1200,7 @@ class DeviceManager:
         if device_id.startswith("rmq1:"):
             from AutoGLM_GUI.devices.rmq1_ai import Rmq1AIAdapter
 
-            return Rmq1AIAdapter(self.get_rmq1_device(device_id))
+            return Rmq1AIAdapter(self.get_rmq1_device(device_id), self.get_rmq1_device)
         with self._devices_lock:
             managed = self.get_device_by_device_id(device_id)
             if not managed:

@@ -894,6 +894,63 @@ def test_cancelled_reconnect_keeps_authority_until_worker_settles(
     asyncio.run(run())
 
 
+def test_cached_ai_adapter_follows_reconnect_and_rejects_old_observation(
+    device, monkeypatch, tmp_path
+):
+    import asyncio
+    import base64
+    import io
+    from PIL import Image
+    from unittest.mock import AsyncMock
+    from AutoGLM_GUI.device_metadata_manager import DeviceMetadataManager
+    from AutoGLM_GUI.devices.rmq1_ai import SceneChanged
+
+    monkeypatch.setattr(
+        DeviceMetadataManager, "get_instance", lambda: DeviceMetadataManager(tmp_path)
+    )
+    manager = DeviceManager()
+    replacement = make_device(tmp_path)
+    output = io.BytesIO()
+    Image.new("RGB", (1920, 1080), "white").save(output, "PNG")
+    encoded = base64.b64encode(output.getvalue()).decode()
+    for raw in (device, replacement):
+        raw._latest = (time.monotonic(), encoded, 1920, 1080)
+    manager._rmq1_devices[device.device_id] = device
+
+    def reconnect_device():
+        device._close_channels()
+        return replacement
+
+    monkeypatch.setattr(device, "reconnect", reconnect_device)
+    adapter = manager.get_async_device_protocol(device.device_id)
+    adapter.validate_owner = AsyncMock()
+
+    async def run():
+        before = await adapter.observe()
+        assert manager.reconnect_rmq1_device(device.device_id) == replacement.session_id
+        after = await adapter.observe()
+        assert after.session_id == replacement.session_id != before.session_id
+        with pytest.raises(SceneChanged):
+            await adapter.execute(before, x=500, y=500)
+        assert not replacement.transport.socket.sent
+        result = await adapter.execute(after, x=500, y=500)
+        assert result["outcome"] == "completed"
+        assert not device.transport.socket.sent
+        packets = replacement.transport.socket.sent
+        assert packets.count(b"\x02\x01left") == packets.count(b"\x02\x00left") == 1
+        adapter._uncertain = True
+        assert adapter.outcome_unknown  # Rebinding must not clear adapter uncertainty.
+        manager._rmq1_devices.pop(device.device_id)
+        adapter._uncertain = False
+        assert not adapter.outcome_unknown
+        replacement._persist_marker("unknown")
+        assert adapter.outcome_unknown  # Still readable after unregistering the device.
+        with pytest.raises(RMQ1Error, match="RMQ1 未连接"):
+            await adapter.observe()
+
+    asyncio.run(run())
+
+
 def live_gesture(device, **overrides):
     from AutoGLM_GUI.devices.rmq1_live import LiveGesture
     import queue

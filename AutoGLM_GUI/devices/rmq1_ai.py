@@ -7,6 +7,7 @@ import base64
 import io
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -95,14 +96,27 @@ def scene_stable(
 class Rmq1AIAdapter(AsyncDeviceAdapter):
     """No Android app/package/navigation semantics are exposed to the iPhone agent."""
 
-    def __init__(self, device: RMQ1Device):
+    def __init__(
+        self,
+        device: RMQ1Device,
+        resolve_device: Callable[[str], RMQ1Device] | None = None,
+    ):
         super().__init__(device)  # type: ignore[arg-type]
-        self.rmq1 = device
+        self._resolve_device = resolve_device or (lambda _: device)
+        # Only inspect the stable host-keyed marker through this reference;
+        # cleanup must remain possible after the registration is removed.
+        self._recovery_device = device
         self.lease_owner = ""
         self._cancelled = threading.Event()
         self._live: LiveGesture | None = None
         self._pending: asyncio.Task[dict[str, Any]] | None = None
         self._uncertain = False
+
+    @property
+    def rmq1(self) -> RMQ1Device:
+        # Registrations survive explicit reconnects; cached adapters must use
+        # the current generation without clearing their own recovery state.
+        return self._resolve_device(self.device_id)
 
     @property
     def pending_writes(self) -> bool:
@@ -111,7 +125,7 @@ class Rmq1AIAdapter(AsyncDeviceAdapter):
     @property
     def outcome_unknown(self) -> bool:
         return self._uncertain or (
-            self.rmq1.recovery_required and not self.pending_writes
+            self._recovery_device.recovery_required and not self.pending_writes
         )
 
     async def validate_owner(self) -> None:
