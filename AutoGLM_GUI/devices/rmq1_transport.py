@@ -10,6 +10,7 @@ import json
 import re
 import socket
 import ssl
+import threading
 from http.cookies import SimpleCookie
 from typing import Any
 from urllib.parse import urlencode
@@ -72,18 +73,40 @@ def probe_certificate(host: str) -> str:
         raise RMQ1Error("无法连接 RMQ1，请检查地址和网络") from None
 
 
+class _PinnedConnection(http.client.HTTPSConnection):
+    def __init__(self, host: str, fingerprint: str):
+        super().__init__(host, timeout=5)
+        self.fingerprint = fingerprint
+
+    def connect(self) -> None:
+        # http.client may reopen a server-closed keep-alive socket. Every open
+        # must verify the pin before request headers (including cookies) leave.
+        self.sock = tls_socket(self.host, self.fingerprint)
+
+
 class RMQ1Transport:
     def __init__(self, host: str, fingerprint: str):
         self.host = validate_host(host)
         self.fingerprint = normalize_fingerprint(fingerprint)
         self._token = ""
+        self._http_lock = threading.Lock()
+        self._http: _PinnedConnection | None = None
 
     def request(
         self, path: str, *, form: dict[str, str] | None = None
     ) -> tuple[Any, str | None]:
-        connection = http.client.HTTPSConnection(self.host, timeout=5)
+        with self._http_lock:
+            return self._request(path, form=form)
+
+    def _request(
+        self, path: str, *, form: dict[str, str] | None = None
+    ) -> tuple[Any, str | None]:
+        if self._http is None:
+            self._http = _PinnedConnection(self.host, self.fingerprint)
+        connection = self._http
         try:
-            connection.sock = tls_socket(self.host, self.fingerprint)
+            if connection.sock is None:
+                connection.connect()
             headers = {"Cookie": f"auth_token={self._token}"} if self._token else {}
             body = None
             if form is not None:
@@ -101,12 +124,13 @@ class RMQ1Transport:
             if len(data) > 256 * 1024:
                 raise RMQ1Error("RMQ1 响应超过限制")
             return json.loads(data), response.getheader("Set-Cookie")
-        except RMQ1Error:
-            raise
-        except Exception:
-            raise RMQ1Error("RMQ1 请求失败，请检查连接") from None
-        finally:
+        except Exception as error:
             connection.close()
+            self._http = None
+            if isinstance(error, RMQ1Error):
+                raise
+            # Never automatically replay requests after an uncertain write.
+            raise RMQ1Error("RMQ1 请求失败，请检查连接") from None
 
     def login(self, username: str, password: str) -> None:
         value, cookie = self.request(
@@ -157,4 +181,8 @@ class RMQ1Transport:
             raise RMQ1Error("RMQ1 视频或控制通道连接失败") from None
 
     def close(self) -> None:
-        self._token = ""
+        with self._http_lock:
+            self._token = ""
+            if self._http is not None:
+                self._http.close()
+                self._http = None

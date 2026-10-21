@@ -17,6 +17,7 @@ from typing import Any
 from uuid import uuid4
 
 import av
+from PIL import Image
 
 from AutoGLM_GUI.devices.rmq1_transport import RMQ1Error, RMQ1Transport
 
@@ -121,11 +122,15 @@ class RMQ1Device:
         self._stop = threading.Event()
         self._video: Any = None
         self._worker: threading.Thread | None = None
-        self._latest: tuple[float, str, int, int] | None = None
+        self._latest: tuple[float, Image.Image | str, int, int] | None = None
+        self._preview_lock = threading.Lock()
+        self._preview_geometry: tuple[float, Geometry] | None = None
+        self._jpeg: tuple[float, str] | None = None
         self._observed: OrderedDict[str, ObservedFrame] = OrderedDict()
         self._actions: dict[str, tuple[str, dict[str, Any]]] = {}
         self._issue = ""
         self._input_finished_at = 0.0
+        self._input_active = False
 
     @property
     def recovery_required(self) -> bool:
@@ -171,7 +176,7 @@ class RMQ1Device:
         return True
 
     def start(self) -> None:
-        self.geometry()
+        self._preview_geometry = (time.monotonic(), self.geometry())
         # GLKVM marks a previously offline HID online only after a successful
         # report write. Opening the control session clears/releases HID and can
         # refresh that stale flag. Validate USB/configuration first, then require
@@ -248,14 +253,15 @@ class RMQ1Device:
                     if decoded.width * decoded.height > 16_777_216:
                         raise RMQ1Error("RMQ1 视频分辨率过大")
                     now = time.monotonic()
-                    if now - last_image < 0.15:
+                    if now - last_image < 0.05:
                         continue
-                    output = io.BytesIO()
-                    decoded.to_image().save(output, format="PNG")
+                    # Decode once, retain only the latest image. PNG is encoded
+                    # on demand for the legacy snapshot API, never per frame.
+                    image = decoded.to_image()
                     with self._frames_lock:
                         self._latest = (
                             now,
-                            base64.b64encode(output.getvalue()).decode(),
+                            image,
                             decoded.width,
                             decoded.height,
                         )
@@ -271,6 +277,72 @@ class RMQ1Device:
             if self._video:
                 self._video.close()
 
+    @staticmethod
+    def _encode(image: Image.Image | str, format: str) -> str:
+        if isinstance(image, str):
+            return image
+        output = io.BytesIO()
+        image.save(
+            output, format=format, **({"quality": 80} if format == "JPEG" else {})
+        )
+        return base64.b64encode(output.getvalue()).decode()
+
+    def _frame_payload(
+        self, image: str, frame: ObservedFrame, frame_id: str
+    ) -> dict[str, Any]:
+        return {
+            "success": True,
+            "image": image,
+            "width": frame.width,
+            "height": frame.height,
+            "content_rect": frame.geometry.content_rect(frame.width, frame.height),
+            "geometry_id": f"{frame.geometry.width}:{frame.geometry.height}:{frame.geometry.orientation}",
+            "session_id": self.session_id,
+            "frame_id": frame_id,
+            "recovery_required": self.recovery_required and not self._input_active,
+            "input_active": self._input_active,
+        }
+
+    def acknowledge_preview(self, frame_id: str, frame: ObservedFrame) -> None:
+        with self._frames_lock:
+            if not self.online or time.monotonic() - frame.at >= 3:
+                raise RMQ1Error(self._issue or "RMQ1 画面已过期")
+            self._observed[frame_id] = frame
+            while len(self._observed) > 128:
+                self._observed.popitem(last=False)
+
+    def preview(
+        self, after: float, timeout: float = 1
+    ) -> tuple[dict[str, Any], ObservedFrame] | None:
+        deadline = time.monotonic() + timeout
+        with self._frames_lock:
+            while self.online and self._latest and self._latest[0] <= after:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._frames_lock.wait(remaining)
+            if not self.online or not self._latest:
+                raise RMQ1Error(self._issue or "RMQ1 画面已过期")
+            at, image, width, height = self._latest
+        # Rendering metadata can be cached. DOWN independently fetches current
+        # geometry and HID, so this cache never authorizes stale coordinates.
+        with self._preview_lock:
+            if (
+                self._preview_geometry is None
+                or time.monotonic() - self._preview_geometry[0] >= 1
+            ):
+                self._preview_geometry = (time.monotonic(), self.geometry())
+            geometry = self._preview_geometry[1]
+            if self._jpeg is None or self._jpeg[0] != at:
+                self._jpeg = (at, self._encode(image, "JPEG"))
+            encoded = self._jpeg[1]
+        frame = ObservedFrame(at, width, height, geometry)
+        return {
+            "type": "frame",
+            "mime": "image/jpeg",
+            **self._frame_payload(encoded, frame, uuid4().hex),
+        }, frame
+
     def observe(self) -> dict[str, Any]:
         geometry = self.geometry()
         with self._frames_lock:
@@ -279,20 +351,55 @@ class RMQ1Device:
             at, image, width, height = self._latest
             if at <= self._input_finished_at:
                 raise RMQ1Error("正在等待操作后的新画面")
-            frame_id = uuid4().hex
-            self._observed[frame_id] = ObservedFrame(at, width, height, geometry)
-            while len(self._observed) > 32:
-                self._observed.popitem(last=False)
-            return {
-                "success": True,
-                "image": image,
-                "width": width,
-                "height": height,
-                "content_rect": geometry.content_rect(width, height),
-                "session_id": self.session_id,
-                "frame_id": frame_id,
-                "recovery_required": self.recovery_required,
-            }
+        frame = ObservedFrame(at, width, height, geometry)
+        frame_id = uuid4().hex
+        self.acknowledge_preview(frame_id, frame)
+        return self._frame_payload(self._encode(image, "PNG"), frame, frame_id)
+
+    def _validate_frame(self, session_id: str, frame_id: str) -> ObservedFrame:
+        if self.recovery_required:
+            raise RMQ1Error("上次操作结果未知，请先核对手机并恢复控制")
+        if session_id != self.session_id or not self.online:
+            raise RMQ1Error("连接或画面已失效，请刷新画面")
+        with self._frames_lock:
+            frame = self._observed.get(frame_id)
+        if not frame or time.monotonic() - frame.at >= 3:
+            raise RMQ1Error("画面已过期，请等待新画面后操作")
+        if frame.at <= self._input_finished_at:
+            raise RMQ1Error("正在等待操作后的新画面")
+        geometry = self.geometry()
+        self.check_hid()
+        if geometry != frame.geometry or not self._frame_current(frame):
+            raise RMQ1Error("画面或旋转设置已变化，请等待新画面")
+        return frame
+
+    def _frame_current(self, frame: ObservedFrame) -> bool:
+        with self._frames_lock:
+            return bool(
+                self.online
+                and time.monotonic() - frame.at < 3
+                and self._latest
+                and self._latest[2:] == (frame.width, frame.height)
+                and (
+                    self._preview_geometry is None
+                    or self._preview_geometry[0] < frame.at
+                    or self._preview_geometry[1] == frame.geometry
+                )
+            )
+
+    def _persist_marker(self, action_id: str) -> None:
+        self._marker.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self._marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as file:
+            file.write(action_id)
+            file.flush()
+            os.fsync(file.fileno())
+        if os.name == "posix":
+            directory = os.open(self._marker.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
 
     def gesture(
         self,
@@ -315,23 +422,8 @@ class RMQ1Device:
                 return result
             if len(self._actions) >= 1000:
                 raise RMQ1Error("本次连接操作次数已达上限，请重新连接")
-            if self.recovery_required:
-                raise RMQ1Error("上次操作结果未知，请先核对手机并恢复控制")
-            if session_id != self.session_id or not self.online:
-                raise RMQ1Error("连接或画面已失效，请刷新画面")
-            with self._frames_lock:
-                frame = self._observed.get(frame_id)
-            if not frame or time.monotonic() - frame.at >= 3:
-                raise RMQ1Error("画面已过期，请等待新画面后操作")
-            geometry = self.geometry()
-            self.check_hid()
-            if (
-                geometry != frame.geometry
-                or time.monotonic() - frame.at >= 3
-                or not self._latest
-                or self._latest[2:] != (frame.width, frame.height)
-            ):
-                raise RMQ1Error("画面或旋转设置已变化，请等待新画面")
+            frame = self._validate_frame(session_id, frame_id)
+            geometry = frame.geometry
             first = geometry.map_point(*start, frame.width, frame.height)
             last = geometry.map_point(*(end or start), frame.width, frame.height)
             if not 50 <= duration_ms <= 1500:
@@ -349,22 +441,11 @@ class RMQ1Device:
                 self._check_hid_state(self._hid_state)
                 if not self.online or time.monotonic() - frame.at >= 3:
                     raise RMQ1Error("画面已过期，请等待新画面")
-                self._marker.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(self._marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w") as file:
-                    file.write(action_id)
-                    file.flush()
-                    os.fsync(file.fileno())
-                # Windows cannot open directories with os.open. The file is
-                # still flushed above; POSIX additionally syncs its directory.
-                if os.name == "posix":
-                    directory = os.open(self._marker.parent, os.O_RDONLY)
-                    try:
-                        os.fsync(directory)
-                    finally:
-                        os.close(directory)
+                self._input_active = True
+                self._persist_marker(action_id)
                 result: dict[str, Any] = {
                     "success": False,
+                    "outcome": "unknown",
                     "action_id": action_id,
                     "error": "操作结果未知，请核对手机并恢复控制；不要重复操作",
                     "recovery_required": True,
@@ -406,6 +487,7 @@ class RMQ1Device:
                     self._marker.unlink()
                     result = {
                         "success": True,
+                        "outcome": "completed",
                         "action_id": action_id,
                         "receipt_scope": "kvm_transport",
                         "recovery_required": False,
@@ -425,6 +507,7 @@ class RMQ1Device:
             finally:
                 self._control_io.release()
         finally:
+            self._input_active = False
             self._operation.release()
 
     @staticmethod
@@ -474,17 +557,27 @@ class RMQ1Device:
         raise RMQ1Error("RMQ1 未确认控制通道")
 
     def recover(self, session_id: str) -> None:
-        with self._operation:
+        # A confirmation applies only to the idle state the user observed.
+        # Queuing behind input could erase a NEW unknown result produced after
+        # that confirmation, so recovery must reject active input immediately.
+        if not self._operation.acquire(blocking=False):
+            raise RMQ1Error("另一个操作正在执行，请等待结束并核对手机后再恢复")
+        try:
             if self._stop.is_set() or session_id != self.session_id:
                 raise RMQ1Error("连接已失效")
             # No gesture can be active during this explicit human action.
             self._marker.unlink(missing_ok=True)
             with self._frames_lock:
                 self._observed.clear()
+        finally:
+            self._operation.release()
 
     def close(self) -> None:
+        # Signal active input before waiting for the operation lock.
+        self._stop.set()
+        with self._frames_lock:
+            self._frames_lock.notify_all()
         with self._operation:
-            self._stop.set()
             if self._control:
                 self._control.close()
             if self._control_worker:
