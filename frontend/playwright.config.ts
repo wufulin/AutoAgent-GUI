@@ -1,5 +1,8 @@
 import { defineConfig } from '@playwright/test';
 
+const frontendPort = process.env.AUTOGLM_E2E_PORT || '3000';
+const frontendUrl = `http://localhost:${frontendPort}`;
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 60000,
@@ -12,7 +15,7 @@ export default defineConfig({
     ['html', { open: 'never', outputFolder: 'playwright-report' }],
   ],
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: frontendUrl,
     // Record a video for every test so any run can be reviewed after the fact.
     video: 'on',
     // Keep a full Playwright trace for every run (not just failures). A trace
@@ -27,8 +30,10 @@ export default defineConfig({
     // Start the full E2E stack (backend services + Vite) and proxy the frontend
     // to the dynamic backend port via VITE_PROXY_TARGET.
     command: 'node e2e/startE2EStack.mjs',
-    url: 'http://localhost:3000',
+    url: frontendUrl,
     timeout: 120000,
-    reuseExistingServer: !process.env.CI,
+    // Each run owns its frontend and backend. Choose AUTOGLM_E2E_PORT when
+    // another worktree uses the default port instead of attaching to it.
+    reuseExistingServer: false,
   },
 });

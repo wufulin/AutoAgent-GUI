@@ -19,6 +19,8 @@ import sys
 import time
 from contextlib import closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import httpx
 
@@ -114,10 +116,13 @@ def _run_autoglm_server(port, llm_url):
     os.environ["AUTOGLM_BASE_URL"] = llm_url + "/v1"
     os.environ["AUTOGLM_MODEL_NAME"] = "mock-glm-model"
     os.environ["AUTOGLM_API_KEY"] = "mock-key"
-    os.environ["HOME"] = "/tmp"
-    from AutoGLM_GUI.server import app
+    # Isolate every Path.home()-based store for this backend process. Shared
+    # /tmp configuration let another test run overwrite saved model settings.
+    with TemporaryDirectory(prefix="autoglm-browser-e2e-") as storage_root:
+        with patch.object(Path, "home", return_value=Path(storage_root)):
+            from AutoGLM_GUI.server import app
 
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+            uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 
 def main():
@@ -201,7 +206,8 @@ def main():
 
         # Start AutoGLM-GUI backend
         print(f"[E2E Services] Starting backend process with coverage={args.coverage}")
-        backend_proc = multiprocessing.Process(
+        # Spawn also on Linux so imported singleton paths cannot be inherited.
+        backend_proc = multiprocessing.get_context("spawn").Process(
             target=_run_autoglm_server, args=(backend_port, llm_url)
         )
         backend_proc.start()
@@ -223,7 +229,7 @@ def main():
         "llm_url": llm_url,
         "agent_url": agent_url,
         "backend_url": backend_url,
-        "frontend_url": "http://localhost:3000",
+        "frontend_url": f"http://localhost:{int(os.environ.get('AUTOGLM_E2E_PORT', '3000'))}",
     }
     with open(output_path, "w") as f:
         json.dump(urls, f)

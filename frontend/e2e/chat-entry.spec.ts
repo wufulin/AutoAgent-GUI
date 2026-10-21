@@ -274,7 +274,9 @@ for (const removedAgent of ['mai', 'droidrun', 'midscene']) {
       const body = (await saved).postDataJSON();
       expect(body.agent_type).toBe('glm-async');
       expect(body.agent_config_params).toEqual({});
-      await expect(page.locator('textarea')).toBeVisible();
+      await expect(
+        page.getByPlaceholder('您想做什么？（Cmd+Enter 发送）')
+      ).toBeVisible();
     }
   );
 }
