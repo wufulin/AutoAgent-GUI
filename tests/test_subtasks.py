@@ -141,6 +141,298 @@ def verification(verdict="met"):
     )
 
 
+@pytest.fixture
+def verifier_clients(monkeypatch):
+    create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "criteria": [
+                                    {"id": "c1", "verdict": "met", "reason": "seen"}
+                                ],
+                                "facts": [],
+                            }
+                        )
+                    ),
+                )
+            ],
+            usage=None,
+        )
+    )
+    opened = []
+    closed = []
+    exit_handler = AsyncMock()
+
+    class Client:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            opened.append(self)
+            return SimpleNamespace(
+                chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+            )
+
+        async def __aexit__(self, *args):
+            await exit_handler()
+            closed.append(self)
+
+    monkeypatch.setattr(subtasks, "AsyncOpenAI", Client)
+    return SimpleNamespace(
+        create=create, opened=opened, closed=closed, exit_handler=exit_handler
+    )
+
+
+def test_task_reuses_verifier_connection_but_each_check_captures_fresh_frame(
+    monkeypatch, verifier_clients
+):
+    context, agent, _ = setup_context(
+        monkeypatch, [[event("done", success=True)], [event("done", success=True)]]
+    )
+
+    async def scenario():
+        assert (await context.execute("phone", "first", ["title"], [])).success
+        assert (await context.execute("phone", "second", ["title"], [])).success
+        assert (await context.check("phone", "final", ["title"], phase="final")).success
+        assert len(verifier_clients.opened) == 1
+        assert not verifier_clients.closed
+        assert verifier_clients.create.await_count == 3
+        assert agent.device.get_screenshot.await_count == 3
+        assert subtasks._verification_context.get() is None
+        await context.close()
+        await context.close()
+        assert verifier_clients.closed == verifier_clients.opened
+
+        other, _, _ = setup_context(monkeypatch, [[event("done", success=True)]])
+        other.task_id = "another-task"
+        assert (await other.execute("phone", "other", ["title"], [])).success
+        assert len(verifier_clients.opened) == 2
+        await other.close()
+        assert verifier_clients.closed == verifier_clients.opened
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("entrypoint", ["execute", "observe"])
+def test_config_invalidation_closes_verifier_before_rejecting_work(
+    monkeypatch, verifier_clients, entrypoint
+):
+    context, _, _ = setup_context(monkeypatch, [[event("done", success=True)]])
+
+    async def scenario():
+        assert (await context.execute("phone", "goal", ["title"], [])).success
+        monkeypatch.setattr(
+            SubtaskRunContext, "fingerprint", staticmethod(lambda: "changed")
+        )
+        if entrypoint == "execute":
+            rejected = await context.execute("phone", "goal", ["title"], [])
+            assert rejected.stop_reason == "configuration_changed"
+        else:
+            with pytest.raises(ValueError, match="context is not active"):
+                await context.observe("phone", "goal", ["title"])
+        assert verifier_clients.closed == verifier_clients.opened
+        verifier_clients.create.assert_awaited_once()
+        await context.close()
+        assert len(verifier_clients.closed) == 1
+
+    asyncio.run(scenario())
+
+
+def test_verifier_model_config_change_cannot_reuse_old_connection(
+    monkeypatch, verifier_clients
+):
+    context, agent, _ = setup_context(
+        monkeypatch, [[event("done", success=True)], [event("done", success=True)]]
+    )
+
+    async def scenario():
+        assert (await context.execute("phone", "first", ["title"], [])).success
+        agent.model_config.api_key = "different-private-key"
+        rejected = await context.execute("phone", "second", ["title"], [])
+        assert rejected.stop_reason == "verification_request_failed"
+        assert "different-private-key" not in rejected.model_dump_json()
+        verifier_clients.create.assert_awaited_once()
+        assert verifier_clients.closed == verifier_clients.opened
+        await context.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("stage", ["capture", "request"])
+def test_cancelling_verification_closes_task_connection_and_drops_context(
+    monkeypatch, verifier_clients, stage
+):
+    context, agent, _ = setup_context(
+        monkeypatch, [[event("done", success=True)], [event("done", success=True)]]
+    )
+
+    async def scenario():
+        assert (await context.execute("phone", "first", ["title"], [])).success
+        started = asyncio.Event()
+
+        async def pending(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        if stage == "capture":
+            agent.device.get_screenshot.side_effect = pending
+        else:
+            verifier_clients.create.side_effect = pending
+        running = asyncio.create_task(context.execute("phone", "next", ["title"], []))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await context.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        assert verifier_clients.closed == verifier_clients.opened
+        assert len(verifier_clients.closed) == 1
+        assert subtasks._verification_context.get() is None
+        await context.close()
+        assert len(verifier_clients.closed) == 1
+
+    asyncio.run(scenario())
+
+
+def test_verifier_cleanup_survives_repeated_cancellation_and_close_waits_again(
+    monkeypatch, verifier_clients
+):
+    context, _, _ = setup_context(monkeypatch, [[event("done", success=True)]])
+
+    async def scenario():
+        assert (await context.execute("phone", "goal", ["title"], [])).success
+        closing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_close():
+            closing.set()
+            await release.wait()
+
+        verifier_clients.exit_handler.side_effect = slow_close
+        cancel = asyncio.create_task(context.cancel())
+        await asyncio.wait_for(closing.wait(), timeout=1)
+        cleanup = context._verifier_cleanup_task
+        assert cleanup is not None
+        cancel.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancel
+        assert not cleanup.done()
+
+        repeated = asyncio.create_task(context._close_verifier_client())
+        await asyncio.sleep(0)
+        repeated.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await repeated
+        assert context._verifier_cleanup_task is cleanup
+        assert not cleanup.done()
+
+        final_close = asyncio.create_task(context.close())
+        await asyncio.sleep(0)
+        assert not final_close.done()
+        assert not verifier_clients.closed
+        release.set()
+        await asyncio.wait_for(final_close, timeout=1)
+        assert cleanup.done() and not cleanup.cancelled()
+        assert verifier_clients.closed == verifier_clients.opened
+        verifier_clients.exit_handler.assert_awaited_once()
+
+    asyncio.run(scenario())
+
+
+def test_verifier_reopen_waits_for_previous_connection_close(
+    monkeypatch, verifier_clients
+):
+    context, agent, _ = setup_context(monkeypatch, [[event("done", success=True)]])
+
+    async def scenario():
+        assert (await context.execute("phone", "goal", ["title"], [])).success
+        closing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_close():
+            closing.set()
+            await release.wait()
+
+        verifier_clients.exit_handler.side_effect = slow_close
+        close = asyncio.create_task(context._close_verifier_client())
+        await asyncio.wait_for(closing.wait(), timeout=1)
+        close.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await close
+        reopen = asyncio.create_task(context._get_verifier_client(agent.model_config))
+        await asyncio.sleep(0)
+        assert not reopen.done()
+        assert len(verifier_clients.opened) == 1
+        release.set()
+        await asyncio.wait_for(reopen, timeout=1)
+        assert len(verifier_clients.closed) == 1
+        assert len(verifier_clients.opened) == 2
+        await context.close()
+        assert verifier_clients.closed == verifier_clients.opened
+
+    asyncio.run(scenario())
+
+
+def test_verifier_cleanup_wait_timeout_keeps_close_running_and_blocks_reopen(
+    monkeypatch, verifier_clients
+):
+    context, agent, _ = setup_context(monkeypatch, [[event("done", success=True)]])
+
+    async def scenario():
+        assert (await context.execute("phone", "goal", ["title"], [])).success
+        release = asyncio.Event()
+        verifier_clients.exit_handler.side_effect = release.wait
+        original_timeout = asyncio.timeout
+        monkeypatch.setattr(
+            asyncio,
+            "timeout",
+            lambda seconds: original_timeout(0.001 if seconds == 5 else seconds),
+        )
+        await context._close_verifier_client()
+        cleanup = context._verifier_cleanup_task
+        assert cleanup is not None and not cleanup.done()
+        with pytest.raises(ValueError, match="connection is not closed"):
+            await context._get_verifier_client(agent.model_config)
+        assert len(verifier_clients.opened) == 1
+        assert not cleanup.done()
+        release.set()
+        await context.close()
+        assert cleanup.done() and not cleanup.cancelled()
+        assert verifier_clients.closed == verifier_clients.opened
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("is_gemini", [False, True])
+def test_only_gemini_executor_is_opted_into_independent_verification(
+    monkeypatch, is_gemini
+):
+    from AutoGLM_GUI.agents.gemini import async_agent
+
+    context, agent, _ = setup_context(monkeypatch, [[event("done", success=True)]])
+    original_reset = agent.reset
+
+    def reset():
+        original_reset()
+        agent.independent_verification = False
+
+    agent.reset = reset
+    if is_gemini:
+        monkeypatch.setattr(async_agent, "AsyncGeminiAgent", FakeAgent)
+    monkeypatch.setattr(
+        subtasks, "verify_completion", AsyncMock(return_value=verification())
+    )
+
+    async def scenario():
+        assert (await context.execute("phone", "goal", ["title"], [])).success
+        assert agent.independent_verification is is_gemini
+        await context.close()
+
+    asyncio.run(scenario())
+
+
 def test_partial_resume_preserves_context_lease_and_incremental_steps(monkeypatch):
     context, agent, manager = setup_context(
         monkeypatch,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -67,8 +68,17 @@ async def execute_skill(
     device_id: str,
     skill: CompiledSkill,
     constraints: list[str] | None = None,
+    *,
+    task_goal: str | None = None,
+    task_criteria: list[str] | None = None,
 ) -> SubtaskResult:
-    """Advance the immutable skill plan only after each step's fresh acceptance."""
+    """Verify every step; include all terminal conditions in the last observation.
+
+    This does not cache an earlier verdict or infer semantic equivalence. The
+    last independent verification receives every original condition, with its
+    goal context. Planner-wide acceptance remains a separate operation because
+    a skill may be only one part of a larger task.
+    """
     original_budget = context.max_steps
     skill_limit = context.total_steps + skill.max_steps
     context.max_steps = (
@@ -88,7 +98,31 @@ async def execute_skill(
                 emit_result(context, result)
                 if not result.success:
                     return result
+            result = None
             for index, step in enumerate(skill.steps):
+                last_step = index == len(skill.steps) - 1
+                criteria = list(step.success_criteria)
+                goal = step.goal
+                if last_step:
+                    criteria.extend(skill.success_criteria)
+                    criteria.extend(task_criteria or [])
+                    # Preserve order and even repeated text: equal wording can
+                    # belong to different goals and is not proof of equivalence.
+                    goal = json.dumps(
+                        {
+                            "step_goal": step.goal,
+                            "step_conditions": list(step.success_criteria),
+                            "skill_goal": skill.goal,
+                            "skill_final_conditions": list(skill.success_criteria),
+                            "task_goal": task_goal,
+                            "task_final_conditions": task_criteria or [],
+                            "instruction": (
+                                "只执行本步骤，在最后动作后申请独立验收。完成条件依次"
+                                "对应上述步骤、技能及任务目标；整体条件不允许扩大操作范围。"
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
                 emit(
                     context,
                     "skill_progress",
@@ -121,8 +155,8 @@ async def execute_skill(
                             "tool_name": "execute_subtask",
                             "tool_args": {
                                 "device_id": device_id,
-                                "goal": step.goal,
-                                "success_criteria": list(step.success_criteria),
+                                "goal": goal,
+                                "success_criteria": criteria,
                                 "skill_id": skill.id,
                                 "step_id": step.id,
                             },
@@ -130,8 +164,8 @@ async def execute_skill(
                     )
                     result = await context.execute(
                         device_id,
-                        step.goal,
-                        list(step.success_criteria),
+                        goal,
+                        criteria,
                         bound_constraints,
                         step.max_steps,
                         checkpoint,
@@ -139,6 +173,37 @@ async def execute_skill(
                     emit_result(context, result)
                     if result.success:
                         break
+                    if last_step and result.verification:
+                        verification = result.verification
+                        checked = verification.criteria
+                        if (
+                            not verification.error
+                            and [item.criterion for item in checked] == criteria
+                            and all(
+                                item.verdict == "met"
+                                for item in checked[: len(step.success_criteria)]
+                            )
+                        ):
+                            # A finished last step must not be replayed merely
+                            # because a broader terminal condition failed.
+                            skill_end = len(step.success_criteria) + len(
+                                skill.success_criteria
+                            )
+                            phase = (
+                                "skill_final"
+                                if any(
+                                    item.verdict != "met"
+                                    for item in checked[
+                                        len(step.success_criteria) : skill_end
+                                    ]
+                                )
+                                else "task_final"
+                            )
+                            return context.stop(
+                                skill.goal,
+                                f"{phase}_not_verified",
+                                "最后步骤已完成，但整体完成条件未通过独立验收，已停止。",
+                            )
                     if result.status != "partial" or not result.checkpoint:
                         return result
                     if step.effect == "write" or attempt == step.max_resumes:
@@ -150,7 +215,7 @@ async def execute_skill(
                     # Only fresh criterion progress can grant additional segments.
                     # A changing screenshot is deliberately not treated as progress.
                     observed = result.verification or await context.observe(
-                        device_id, step.goal, list(step.success_criteria)
+                        device_id, goal, criteria
                     )
                     if observed.error or any(
                         c.verdict == "unknown" for c in observed.criteria
@@ -186,10 +251,21 @@ async def execute_skill(
                     return context.stop(
                         skill.goal, "skill_incomplete", "技能步骤未完成。"
                     )
-            result = await context.check(
-                device_id, skill.goal, list(skill.success_criteria), phase="skill_final"
+            if result is None:
+                return context.stop(
+                    skill.goal, "skill_incomplete", "技能没有可执行步骤。"
+                )
+            emit(
+                context,
+                "skill_progress",
+                {
+                    "skill_id": skill.id,
+                    "skill_version": skill.version,
+                    "phase": "skill_final",
+                    "verification": "combined_with_last_step",
+                    "subtask_id": result.subtask_id,
+                },
             )
-            emit_result(context, result)
             return result
     except TimeoutError:
         context.deadline_reason = "skill_time_budget_reached"
@@ -330,15 +406,9 @@ class ExecutionRun:
                                 self.device_id,
                                 skill,
                                 self.request.constraints,
+                                task_goal=self.message,
+                                task_criteria=self.request.success_criteria,
                             )
-                            if result.success and self.request.success_criteria:
-                                result = await self.context.check(
-                                    self.device_id,
-                                    skill.goal,
-                                    self.request.success_criteria,
-                                    phase="task_final",
-                                )
-                                emit_result(self.context, result)
                         else:
                             emit(
                                 self.context,

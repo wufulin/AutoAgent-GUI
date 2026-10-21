@@ -92,3 +92,21 @@ def get_system_prompt(lang: str = "en") -> str:
 # Prefer get_system_prompt() for dynamic date.
 SYSTEM_PROMPT = get_system_prompt("en")
 SYSTEM_PROMPT_ZH = get_system_prompt("cn")
+
+
+INDEPENDENT_VERIFICATION_PROMPT = """
+
+# Independent verification handoff
+This bounded subtask has a separate verifier. On the final physical action that you
+expect will satisfy ALL requested criteria, set verify_after=true. Once the action
+succeeds, execution stops and the verifier checks a fresh screenshot; do not spend
+another model turn merely to announce completion. This flag requests verification,
+not success. Use finish() when the goal is already met without another action, or
+when blocked/unable to complete; explain any obstacle. Never use verify_after to
+hide a failure or bypass a CAPTCHA, login, unknown popup, or safety requirement.
+If the instructions require further actions (for example selecting a specific tab
+after navigation), do not request verification before those actions are done.
+Asynchronous loading may still be incomplete after the final action and its brief
+settling buffer. Only the independent verifier can accept the observed result;
+loading or an action acknowledgment must never be treated as task success.
+"""

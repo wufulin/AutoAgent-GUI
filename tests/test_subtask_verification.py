@@ -33,6 +33,18 @@ def reply_content(criteria=CRITERIA, verdict="met", **extra):
     )
 
 
+def compact_reply(ids=("c1", "c2"), verdict="met"):
+    return json.dumps(
+        {
+            "criteria": [
+                {"id": identifier, "verdict": verdict, "reason": "seen"}
+                for identifier in ids
+            ],
+            "facts": [],
+        }
+    )
+
+
 def response(content=None, *, finish_reason="stop", usage=None, choices=None):
     return SimpleNamespace(
         choices=(
@@ -74,6 +86,7 @@ def harness(monkeypatch, tmp_path):
         temperature=0.2,
     )
     clients = []
+    closed = []
 
     class Client:
         def __init__(self, **kwargs):
@@ -85,13 +98,13 @@ def harness(monkeypatch, tmp_path):
             )
 
         async def __aexit__(self, *args):
-            pass
+            closed.append(self)
 
     monkeypatch.setattr(subtasks, "AsyncOpenAI", Client)
 
-    async def run():
+    async def run(criteria=CRITERIA):
         with trace_context("test-verification"):
-            return await subtasks.verify_completion(device, model, "goal", CRITERIA)
+            return await subtasks.verify_completion(device, model, "goal", criteria)
 
     def records():
         return [json.loads(line) for line in trace_file.read_text().splitlines()]
@@ -121,6 +134,7 @@ def harness(monkeypatch, tmp_path):
         device=device,
         model=model,
         clients=clients,
+        closed=closed,
         records=records,
         trace_file=trace_file,
         assert_private_data_absent=assert_private_data_absent,
@@ -137,6 +151,7 @@ def test_verifier_uses_fresh_image_without_tools_and_preserves_verdict(
     harness.device.get_screenshot.assert_awaited_once()
     harness.create.assert_awaited_once()
     assert len(harness.clients) == 1
+    assert len(harness.closed) == 1
     assert harness.clients[0]["max_retries"] == 0
     assert harness.clients[0]["timeout"] == 120
     assert subtasks.VERIFICATION_TIMEOUT_SECONDS > harness.clients[0]["timeout"]
@@ -186,6 +201,104 @@ def test_provider_extensions_cannot_override_read_only_request(harness):
     assert [item["role"] for item in request["messages"]] == ["system", "user"]
     assert "tools" not in request and "functions" not in request
     harness.assert_private_data_absent(result, "private-injected-message")
+
+
+@pytest.mark.parametrize("thinking", [None, "enabled", "disabled"])
+def test_deepseek_verification_preserves_provider_thinking_configuration(
+    harness, thinking
+):
+    harness.model.model_name = "deepseek-flash"
+    extensions = {
+        "reasoning_effort": "low",
+    }
+    if thinking is not None:
+        extensions["thinking"] = {"type": thinking}
+    harness.model.extra_body = {**extensions, "tools": [{"type": "function"}]}
+    result = asyncio.run(harness.run())
+    assert result.error is None
+    assert harness.create.call_args.kwargs["extra_body"] == extensions
+    assert harness.model.extra_body == {
+        **extensions,
+        "tools": [{"type": "function"}],
+    }
+
+
+@pytest.mark.parametrize("verdict", ["met", "unmet", "unknown"])
+def test_compact_reply_restores_complete_ordered_public_criteria(harness, verdict):
+    harness.create.return_value = response(compact_reply(verdict=verdict))
+    result = asyncio.run(harness.run())
+    assert result.error is None
+    assert [item.criterion for item in result.criteria] == CRITERIA
+    assert [item.verdict for item in result.criteria] == [verdict, verdict]
+    assert all("id" not in item for item in result.model_dump()["criteria"])
+    content = harness.create.call_args.kwargs["messages"][1]["content"]
+    prompt = json.loads(
+        next(item["text"] for item in content if item["type"] == "text")
+    )
+    assert prompt["success_criteria"] == [
+        {"id": "c1", "criterion": "title"},
+        {"id": "c2", "criterion": "list"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "ids,error",
+    [
+        (["c2", "c1"], "verification_criteria_mismatch"),
+        (["c1", "c1"], "verification_criteria_mismatch"),
+        (["c1"], "verification_criteria_mismatch"),
+        (["c1", "c2", "c3"], "verification_criteria_mismatch"),
+        (["c1", "unknown"], "verification_criteria_mismatch"),
+        (["C1", "c2"], "verification_criteria_mismatch"),
+        ([1, "c2"], "verification_schema_invalid"),
+        ([True, "c2"], "verification_schema_invalid"),
+        ([None, "c2"], "verification_schema_invalid"),
+    ],
+)
+def test_compact_criteria_reject_missing_reordered_unknown_or_nonstring_ids(
+    harness, ids, error
+):
+    harness.create.return_value = response(compact_reply(ids))
+    result = asyncio.run(harness.run())
+    assert result.error == error
+    assert result.criteria == []
+    harness.create.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "content,error",
+    [
+        (
+            '{"criteria":[{"id":"c1","criterion":"title","verdict":"met","reason":"seen"}],"facts":[]}',
+            "verification_schema_invalid",
+        ),
+        (
+            '{"criteria":[{"id":"c1","verdict":"met","reason":"seen"},{"criterion":"list","verdict":"met","reason":"seen"}],"facts":[]}',
+            "verification_schema_invalid",
+        ),
+        (
+            '{"criteria":[],"criteria":[],"facts":[]}',
+            "verification_json_invalid",
+        ),
+        (
+            '{"criteria":[{"id":"c1","id":"c2","verdict":"met","reason":"seen"}],"facts":[]}',
+            "verification_json_invalid",
+        ),
+        ('{"criteria":[],"facts":[NaN]}', "verification_json_invalid"),
+    ],
+)
+def test_ambiguous_or_nonstandard_json_cannot_hide_conditions(harness, content, error):
+    harness.create.return_value = response(content)
+    result = asyncio.run(harness.run())
+    assert result.error == error
+    assert result.criteria == []
+
+
+def test_compact_reply_still_rejects_truncated_valid_json(harness):
+    harness.create.return_value = response(compact_reply(), finish_reason="length")
+    result = asyncio.run(harness.run())
+    assert result.error == "verification_output_truncated"
+    assert result.criteria == []
 
 
 @pytest.mark.parametrize(

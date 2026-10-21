@@ -75,7 +75,13 @@ def setup(monkeypatch, batches, verdicts=None):
         verdict = next(verdict_iter) if verdict_iter is not None else "met"
         return Verification(
             criteria=[
-                {"criterion": criterion, "verdict": verdict, "reason": "fresh screen"}
+                {
+                    "criterion": criterion,
+                    "verdict": verdict.get(criterion, "met")
+                    if isinstance(verdict, dict)
+                    else verdict,
+                    "reason": "fresh screen",
+                }
                 for criterion in criteria
             ],
             facts=["visible"],
@@ -154,13 +160,11 @@ def test_skill_checks_preconditions_each_stage_and_final_goal(monkeypatch):
         "verify",
         "execute",
         "verify",
-        "verify",
     ]
     assert [item[2] for item in timeline if item[0] == "verify"] == [
         ["ready"],
         ["first condition"],
-        ["second condition"],
-        ["overall condition"],
+        ["second condition", "overall condition"],
     ]
     assert all(
         "global constraint" in item[1] and "task constraint" in item[1]
@@ -189,7 +193,9 @@ def test_failed_precondition_stops_before_any_action(monkeypatch):
 
 def test_final_skill_criteria_are_required_after_successful_step(monkeypatch):
     context, agent, _, _ = setup(
-        monkeypatch, [[event("step"), event("done", success=True)]], ["met", "unmet"]
+        monkeypatch,
+        [[event("step"), event("done", success=True)]],
+        [{"first condition": "met", "overall condition": "unmet"}],
     )
 
     async def scenario():
@@ -352,5 +358,72 @@ def test_builtin_open_wechat_can_start_from_launcher_without_app_precheck(
 
     asyncio.run(scenario())
     # Launch first: the launcher cannot prove WeChat is installed and logged in.
-    assert [entry[0] for entry in timeline] == ["execute", "verify", "verify"]
+    assert [entry[0] for entry in timeline] == ["execute", "verify"]
     assert len(agent.feedback) == 1
+
+
+@pytest.mark.parametrize("verdict", ["unmet", "unknown"])
+def test_combined_final_failure_never_replays_completed_last_step(monkeypatch, verdict):
+    context, agent, _, timeline = setup(
+        monkeypatch,
+        [[event("step"), event("done", success=True)]],
+        [{"overall condition": verdict}],
+    )
+
+    async def scenario():
+        result = await execute_skill(context, "phone", skill(max_resumes=3))
+        assert result.stop_reason == "skill_final_not_verified"
+        assert not result.success
+        assert context.continuations == 0
+        await context.close()
+
+    asyncio.run(scenario())
+    assert len(agent.feedback) == 1
+    assert len([item for item in timeline if item[0] == "verify"]) == 1
+
+
+def test_task_conditions_are_checked_with_step_and_skill_in_one_fresh_call(monkeypatch):
+    context, _, _, timeline = setup(
+        monkeypatch,
+        [[event("step"), event("done", success=True)]],
+        [{"task condition": "unmet"}],
+    )
+
+    async def scenario():
+        result = await execute_skill(
+            context,
+            "phone",
+            skill(),
+            task_goal="user goal",
+            task_criteria=["task condition"],
+        )
+        assert result.stop_reason == "task_final_not_verified"
+        assert not context.final_result()[0]
+        await context.close()
+
+    asyncio.run(scenario())
+    checks = [item for item in timeline if item[0] == "verify"]
+    assert len(checks) == 1
+    assert checks[0][2] == ["first condition", "overall condition", "task condition"]
+    assert "user goal" in checks[0][1] and "overall goal" in checks[0][1]
+
+
+def test_identical_condition_text_is_preserved_for_each_goal_scope(monkeypatch):
+    context, _, _, timeline = setup(
+        monkeypatch, [[event("step"), event("done", success=True)]]
+    )
+
+    async def scenario():
+        result = await execute_skill(
+            context, "phone", skill(), task_criteria=["overall condition"]
+        )
+        assert result.success
+        assert len(result.verification.criteria) == 3
+        await context.close()
+
+    asyncio.run(scenario())
+    assert timeline[-1][2] == [
+        "first condition",
+        "overall condition",
+        "overall condition",
+    ]

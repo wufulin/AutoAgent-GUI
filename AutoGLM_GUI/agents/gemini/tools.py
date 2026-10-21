@@ -4,6 +4,24 @@ Maps device operations to OpenAI-compatible tool schemas.
 Coordinates use 0-1000 relative scale (same as GLM agent).
 """
 
+from copy import deepcopy
+from typing import Any
+
+
+PHYSICAL_TOOL_NAMES = frozenset(
+    {
+        "tap",
+        "double_tap",
+        "long_press",
+        "swipe",
+        "type_text",
+        "launch_app",
+        "back",
+        "home",
+    }
+)
+
+
 DEVICE_TOOLS = [
     {
         "type": "function",
@@ -190,3 +208,22 @@ DEVICE_TOOLS = [
         },
     },
 ]
+
+
+def get_device_tools(*, independent_verification: bool = False) -> list[dict[str, Any]]:
+    """Expose the completion handoff only when a separate verifier owns acceptance."""
+    if not independent_verification:
+        return DEVICE_TOOLS
+    tools = deepcopy(DEVICE_TOOLS)
+    for tool in tools:
+        function = tool["function"]
+        if function["name"] in PHYSICAL_TOOL_NAMES:
+            function["parameters"]["properties"]["verify_after"] = {
+                "type": "boolean",
+                "description": (
+                    "Set true only on the final action expected to meet all subtask "
+                    "criteria. After successful execution, stop and let the independent "
+                    "verifier inspect a fresh screenshot. This is not a success claim."
+                ),
+            }
+    return tools
