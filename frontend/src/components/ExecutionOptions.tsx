@@ -3,6 +3,7 @@ import type { SkillDefinition, TaskExecution } from '../api';
 import { useTranslation } from '../lib/i18n-context';
 import { skillDefaults } from '../lib/skills';
 import { SkillParameters } from './SkillParameters';
+import { SkillPicker } from './SkillPicker';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 
@@ -71,34 +72,22 @@ export function ExecutionOptions({
         {value.route === 'skill' && (
           <>
             <Label htmlFor={`${id}-skill`}>{t.skills.select}</Label>
-            <select
+            <SkillPicker
               id={`${id}-skill`}
-              className="min-w-0 max-w-full rounded-md border bg-background px-2 py-1 text-sm"
-              value={value.skill_id || ''}
+              skills={skills}
+              value={skill ? `${skill.id}@${skill.version}` : ''}
               disabled={disabled}
-              onChange={event => {
-                const selected = skills.find(
-                  item => item.id === event.target.value
-                );
+              onChange={selected =>
                 onChange({
                   ...value,
-                  skill_id: selected?.id,
-                  skill_version: selected?.version,
-                  parameters: selected ? skillDefaults(selected) : {},
-                  max_steps: selected?.max_steps ?? 60,
-                  max_seconds: selected?.max_seconds ?? defaultMaxSeconds,
-                });
-              }}
-            >
-              <option value="">{t.skills.select}</option>
-              {skills
-                .filter(item => item.enabled)
-                .map(item => (
-                  <option value={item.id} key={item.id}>
-                    {item.name} · v{item.version}
-                  </option>
-                ))}
-            </select>
+                  skill_id: selected.id,
+                  skill_version: selected.version,
+                  parameters: skillDefaults(selected),
+                  max_steps: selected.max_steps,
+                  max_seconds: selected.max_seconds,
+                })
+              }
+            />
           </>
         )}
       </div>

@@ -23,7 +23,7 @@ def client(tmp_path: Path, monkeypatch):
 
 def test_catalog_crud_revision_contract(client: TestClient):
     catalog = client.get("/api/skills").json()["skills"]
-    assert len(catalog) == 5
+    assert len(catalog) == 6
     assert any(
         skill["id"] == "ios_wechat_open_group" and skill["platforms"] == ["ios"]
         for skill in catalog
@@ -63,3 +63,27 @@ def test_validation_and_storage_errors(client: TestClient):
     response = client.get("/api/skills")
     assert response.status_code == 503
     assert "repair skills.json" in response.json()["detail"]
+
+
+def test_application_metadata_and_builtin_copy(client):
+    response = client.get("/api/skills/dianping_search_shops")
+    assert response.status_code == 200
+    builtin = response.json()
+    assert builtin["app"] == {"id": "dianping", "name": "大众点评"}
+    assert builtin["icon"] == "search" and builtin["builtin"]
+    copied = {**builtin, "id": "my_dianping_search", "builtin": False}
+    assert client.post("/api/skills", json=copied).status_code == 201
+    assert client.get("/api/skills/my_dianping_search").json()["app"] == builtin["app"]
+    assert (
+        client.put(
+            "/api/skills/dianping_search_shops",
+            json={"expected_version": 1, "skill": builtin},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.delete(
+            "/api/skills/dianping_search_shops?expected_version=1"
+        ).status_code
+        == 400
+    )

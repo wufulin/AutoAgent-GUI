@@ -38,6 +38,9 @@ a = Analysis(
         # ADB Keyboard APK 及许可证文件（自动安装功能）
         (str(ROOT_DIR / 'AutoGLM_GUI' / 'resources' / 'apks'), 'AutoGLM_GUI/resources/apks'),
 
+        # Versioned built-in device skills
+        (str(ROOT_DIR / 'AutoGLM_GUI' / 'resources' / 'skills'), 'AutoGLM_GUI/resources/skills'),
+
         # Package metadata（运行时需要）
         *copy_metadata('fastmcp'),
     ],

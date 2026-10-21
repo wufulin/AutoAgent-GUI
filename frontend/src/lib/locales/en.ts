@@ -413,6 +413,21 @@ export const en = {
     openFolderFailed: 'Failed to open log folder: {error}',
   },
   skills: {
+    allApps: 'All',
+    general: 'General skills',
+    application: 'Application',
+    applicationId: 'Application ID',
+    applicationName: 'Application name',
+    customApplication: 'Other application',
+    functionIcon: 'Function icon',
+    icons: {
+      sparkles: 'General',
+      search: 'Search',
+      'message-circle': 'Chat',
+      contact: 'Profile',
+      smartphone: 'Open app',
+      users: 'Groups',
+    },
     additionalConstraints:
       'Additional constraints (optional, e.g. do not send messages)',
     constraintsHint:

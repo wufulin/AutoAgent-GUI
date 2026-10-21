@@ -279,6 +279,7 @@ async def list_skills() -> str:
                 "version": skill.version,
                 "name": skill.name,
                 "description": skill.description,
+                "app": skill.app.model_dump() if skill.app else None,
                 "goal": skill.goal,
                 "parameters": {
                     key: value.model_dump() for key, value in skill.parameters.items()

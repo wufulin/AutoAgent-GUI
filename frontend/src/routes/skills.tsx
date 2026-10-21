@@ -12,7 +12,9 @@ import {
   type SkillValue,
 } from '../api';
 import { useTranslation } from '../lib/i18n-context';
-import { textLines } from '../lib/skills';
+import { groupSkills, textLines } from '../lib/skills';
+import { SkillIcon } from '../components/SkillIcon';
+import { skillIcons } from '../lib/skill-icons';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -41,6 +43,8 @@ const newStep = (): SkillStep => ({
 });
 const newSkill = (): SkillDefinition => ({
   id: '',
+  app: null,
+  icon: 'sparkles',
   version: 1,
   name: '',
   description: '',
@@ -129,12 +133,26 @@ function Field({
 export function SkillsComponent() {
   const t = useTranslation();
   const [skills, setSkills] = useState<SkillDefinition[]>([]);
+  const [appFilter, setAppFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<SkillDefinition | null>(null);
   const [parameters, setParameters] = useState<ParameterDraft[]>([]);
   const [editing, setEditing] = useState<SkillDefinition | null>(null);
   const [saving, setSaving] = useState(false);
+  const groups = groupSkills(skills, t.skills.general);
+  const visibleGroups = groups.filter(
+    group => appFilter === 'all' || group.key === appFilter
+  );
+  const apps = Array.from(
+    new Map(
+      [
+        { id: 'wechat', name: '微信' },
+        { id: 'dianping', name: '大众点评' },
+        ...skills.flatMap(skill => (skill.app ? [skill.app] : [])),
+      ].map(app => [app.id, app])
+    ).values()
+  );
   const load = async () => {
     try {
       setSkills((await listSkills()).skills);
@@ -204,6 +222,9 @@ export function SkillsComponent() {
       const payload = {
         ...draft,
         name: draft.name.trim(),
+        app: draft.app
+          ? { id: draft.app.id.trim(), name: draft.app.name.trim() }
+          : null,
         parameters: params,
         preconditions: textLines(draft.preconditions.join('\n')),
         constraints: textLines(draft.constraints.join('\n')),
@@ -217,6 +238,10 @@ export function SkillsComponent() {
       };
       if (
         !/^[a-z][a-z0-9_-]{0,63}$/.test(payload.id) ||
+        (payload.app &&
+          (!/^[a-z][a-z0-9_-]{0,63}$/.test(payload.app.id) ||
+            !payload.app.name ||
+            payload.app.name.length > 120)) ||
         !payload.name ||
         !payload.goal.trim() ||
         !payload.success_criteria.length ||
@@ -265,6 +290,27 @@ export function SkillsComponent() {
           {error}
         </p>
       )}
+      <div
+        role="group"
+        aria-label={t.skills.application}
+        className="flex flex-wrap gap-2"
+      >
+        {[
+          { key: 'all', name: t.skills.allApps },
+          { key: 'general', name: t.skills.general },
+          ...groups.filter(group => group.key !== 'general'),
+        ].map(group => (
+          <Button
+            key={group.key}
+            variant={appFilter === group.key ? 'default' : 'outline'}
+            size="sm"
+            aria-pressed={appFilter === group.key}
+            onClick={() => setAppFilter(group.key)}
+          >
+            {group.name}
+          </Button>
+        ))}
+      </div>
       {loading ? (
         <Loader2 className="mx-auto my-12 animate-spin" />
       ) : !skills.length ? (
@@ -272,71 +318,97 @@ export function SkillsComponent() {
           {t.skills.empty}
         </p>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {skills.map(skill => (
-            <Card key={skill.id}>
-              <CardHeader>
-                <div className="flex items-center justify-between gap-2">
-                  <Badge variant="secondary">
-                    {skill.builtin ? t.skills.builtin : t.skills.custom}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">
-                    v{skill.version}
-                  </span>
-                </div>
-                <CardTitle className="mt-2 text-lg">{skill.name}</CardTitle>
-                {!skill.enabled && (
-                  <Badge variant="outline">{t.skills.disabled}</Badge>
-                )}
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <p className="text-sm text-muted-foreground">
-                  {skill.description || skill.goal}
-                </p>
-                <ol className="space-y-1 text-sm">
-                  {skill.steps.map((step, i) => (
-                    <li key={step.id} className="line-clamp-2">
-                      {i + 1}. {step.goal}
-                    </li>
-                  ))}
-                </ol>
-                <p className="text-xs text-muted-foreground">
-                  {t.skills.parameters}:{' '}
-                  {Object.keys(skill.parameters).join(', ') || '—'} ·{' '}
-                  {t.skills.maxSteps}: {skill.max_steps}
-                </p>
-                <div className="flex gap-2">
-                  {!skill.builtin && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => open(skill)}
-                    >
-                      <Pencil className="mr-1 h-3 w-3" />
-                      {t.common.edit}
-                    </Button>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => open(skill, true)}
-                  >
-                    <Copy className="mr-1 h-3 w-3" />
-                    {t.skills.copy}
-                  </Button>
-                  {!skill.builtin && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`${t.common.delete} ${skill.name}`}
-                      onClick={() => void remove(skill)}
-                    >
-                      <Trash2 className="h-4 w-4 text-red-600" />
-                    </Button>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+        <div className="space-y-6">
+          {!visibleGroups.length && (
+            <p className="py-8 text-center text-muted-foreground">
+              {t.skills.empty}
+            </p>
+          )}
+          {visibleGroups.map(group => (
+            <section
+              key={group.key}
+              aria-label={group.name}
+              className="space-y-3"
+            >
+              <h2 className="text-xl font-semibold">
+                {group.name}{' '}
+                <span className="text-sm font-normal text-muted-foreground">
+                  ({group.skills.length})
+                </span>
+              </h2>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {group.skills.map(skill => (
+                  <Card key={skill.id}>
+                    <CardHeader>
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge variant="secondary">
+                          {skill.builtin ? t.skills.builtin : t.skills.custom}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">
+                          v{skill.version}
+                        </span>
+                      </div>
+                      <CardTitle className="mt-2 flex min-w-0 items-center gap-3 text-lg">
+                        <SkillIcon skill={skill} />
+                        <span className="min-w-0 break-words">
+                          {skill.name}
+                        </span>
+                      </CardTitle>
+                      {!skill.enabled && (
+                        <Badge variant="outline">{t.skills.disabled}</Badge>
+                      )}
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <p className="text-sm text-muted-foreground">
+                        {skill.description || skill.goal}
+                      </p>
+                      <ol className="space-y-1 text-sm">
+                        {skill.steps.map((step, i) => (
+                          <li key={step.id} className="line-clamp-2">
+                            {i + 1}. {step.goal}
+                          </li>
+                        ))}
+                      </ol>
+                      <p className="text-xs text-muted-foreground">
+                        {t.skills.parameters}:{' '}
+                        {Object.keys(skill.parameters).join(', ') || '—'} ·{' '}
+                        {t.skills.maxSteps}: {skill.max_steps}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {!skill.builtin && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => open(skill)}
+                          >
+                            <Pencil className="mr-1 h-3 w-3" />
+                            {t.common.edit}
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => open(skill, true)}
+                        >
+                          <Copy className="mr-1 h-3 w-3" />
+                          {t.skills.copy}
+                        </Button>
+                        {!skill.builtin && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label={`${t.common.delete} ${skill.name}`}
+                            onClick={() => void remove(skill)}
+                          >
+                            <Trash2 className="h-4 w-4 text-red-600" />
+                          </Button>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </section>
           ))}
         </div>
       )}
@@ -375,6 +447,90 @@ export function SkillsComponent() {
                   disabled={Boolean(editing)}
                 />
               </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="skill-application">
+                    {t.skills.application}
+                  </Label>
+                  <select
+                    id="skill-application"
+                    className="w-full rounded-md border bg-background p-2 text-sm"
+                    value={
+                      draft.app
+                        ? apps.some(app => app.id === draft.app?.id)
+                          ? draft.app.id
+                          : '__custom__'
+                        : ''
+                    }
+                    onChange={event => {
+                      const selected = apps.find(
+                        app => app.id === event.target.value
+                      );
+                      update(
+                        'app',
+                        event.target.value === ''
+                          ? null
+                          : selected || { id: '', name: '' }
+                      );
+                    }}
+                  >
+                    <option value="">{t.skills.general}</option>
+                    {apps.map(app => (
+                      <option key={app.id} value={app.id}>
+                        {app.name}
+                      </option>
+                    ))}
+                    <option value="__custom__">
+                      {t.skills.customApplication}
+                    </option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="skill-icon">{t.skills.functionIcon}</Label>
+                  <div className="flex items-center gap-3">
+                    <SkillIcon skill={draft} />
+                    <select
+                      id="skill-icon"
+                      className="min-w-0 flex-1 rounded-md border bg-background p-2 text-sm"
+                      value={draft.icon || 'sparkles'}
+                      onChange={event => update('icon', event.target.value)}
+                    >
+                      {draft.icon && !Object.hasOwn(skillIcons, draft.icon) && (
+                        <option value={draft.icon}>{draft.icon}</option>
+                      )}
+                      {Object.keys(skillIcons).map(icon => (
+                        <option key={icon} value={icon}>
+                          {t.skills.icons[icon as keyof typeof t.skills.icons]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+              {draft.app && !['wechat', 'dianping'].includes(draft.app.id) && (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field
+                    label={t.skills.applicationId}
+                    value={draft.app.id}
+                    onChange={value =>
+                      update(
+                        'app',
+                        apps.find(app => app.id === value) || {
+                          id: value,
+                          name: draft.app?.name || '',
+                        }
+                      )
+                    }
+                  />
+                  <Field
+                    label={t.skills.applicationName}
+                    value={draft.app.name}
+                    onChange={value =>
+                      update('app', { id: draft.app?.id || '', name: value })
+                    }
+                  />
+                </div>
+              )}
               <Field
                 label={t.skills.detail}
                 value={draft.description}
