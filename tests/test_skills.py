@@ -107,7 +107,11 @@ def test_revision_pin_conflict_disable_and_delete(tmp_path: Path) -> None:
 def test_builtins_are_protected_and_return_copies(tmp_path: Path) -> None:
     manager = SkillManager(tmp_path / "skills.json")
     builtins = manager.list_skills()
-    assert len(builtins) == 4
+    assert len(builtins) == 5
+    assert any(
+        skill.id == "ios_wechat_open_group" and skill.platforms == ["ios"]
+        for skill in builtins
+    )
     assert all(skill.builtin for skill in builtins)
     first = builtins[0]
     with pytest.raises(SkillError):

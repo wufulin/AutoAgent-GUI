@@ -23,7 +23,11 @@ def client(tmp_path: Path, monkeypatch):
 
 def test_catalog_crud_revision_contract(client: TestClient):
     catalog = client.get("/api/skills").json()["skills"]
-    assert len(catalog) == 4
+    assert len(catalog) == 5
+    assert any(
+        skill["id"] == "ios_wechat_open_group" and skill["platforms"] == ["ios"]
+        for skill in catalog
+    )
     local = {**catalog[0], "id": "my_navigation", "builtin": False}
     response = client.post("/api/skills", json=local)
     assert response.status_code == 201

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -17,9 +18,42 @@ from AutoGLM_GUI.subtasks import SubtaskResult, SubtaskRunContext
 
 
 def resolve_route(
-    message: str, request: ExecutionRequest
+    message: str, request: ExecutionRequest, device_id: str | None = None
 ) -> tuple[str, str, CompiledSkill | None]:
     """No semantic guessing or LLM call is needed for exact known skill commands."""
+    if device_id and device_id.startswith("rmq1:"):
+        if request.route == "skill" and request.skill_id == "ios_wechat_open_group":
+            return (
+                "skill",
+                "explicit_iphone_skill",
+                skill_manager.compile_skill(
+                    request.skill_id, request.skill_version or 1, request.parameters
+                ),
+            )
+        if request.route == "auto":
+            # Deliberately bounded grammar: do not turn unrelated instructions
+            # into an authorized iPhone skill or guess the recipient.
+            name = None
+            for pattern in (
+                r"(?:在微信中?|微信中)?搜索(?:并进入|并打开|进入|打开)[“\"']([^“”\"']{1,80})[”\"']群(?:聊)?(?:[，,]不发送消息)?[。！]?",
+                r"(?:在微信中?|微信中)?搜索(?:并进入|并打开|进入|打开)群(?:聊)?[“\"']([^“”\"']{1,80})[”\"'](?:[，,]不发送消息)?[。！]?",
+                r"(?:在微信中?|微信中)?搜索(?:并进入|并打开|进入|打开)([^\s，,。！“”\"']{1,80})群(?:聊)?(?:[，,]不发送消息)?[。！]?",
+            ):
+                match = re.fullmatch(pattern, message.strip())
+                if match:
+                    name = match.group(1)
+                    break
+            if name:
+                return (
+                    "skill",
+                    "exact_iphone_command",
+                    skill_manager.compile_skill(
+                        "ios_wechat_open_group", 1, {"group_name": name}
+                    ),
+                )
+        raise ValueError(
+            "RMQ1 首版仅支持搜索并进入指定微信群；请选择技能并填写精确群名"
+        )
     if request.route == "skill":
         assert request.skill_id is not None and request.skill_version is not None
         return (
@@ -79,6 +113,20 @@ async def execute_skill(
     goal context. Planner-wide acceptance remains a separate operation because
     a skill may be only one part of a larger task.
     """
+    platform = "ios" if device_id.startswith("rmq1:") else "android"
+    if platform not in skill.platforms:
+        return context.stop(
+            skill.goal, "skill_platform_mismatch", "该技能不支持当前设备平台。"
+        )
+    if platform == "ios":
+        if skill.id != "ios_wechat_open_group":
+            return context.stop(
+                skill.goal,
+                "iphone_skill_unsupported",
+                "iPhone 首版仅支持微信群导航技能。",
+            )
+        context.ios_group_name = str(skill.parameters["group_name"])
+        context.ios_search_verified = False
     original_budget = context.max_steps
     skill_limit = context.total_steps + skill.max_steps
     context.max_steps = (
@@ -100,6 +148,8 @@ async def execute_skill(
                     return result
             result = None
             for index, step in enumerate(skill.steps):
+                if platform == "ios":
+                    context.ios_phase = step.id
                 last_step = index == len(skill.steps) - 1
                 criteria = list(step.success_criteria)
                 goal = step.goal
@@ -170,8 +220,14 @@ async def execute_skill(
                         step.max_steps,
                         checkpoint,
                     )
+                    if platform == "ios" and step.id == "enter" and result.success:
+                        result.message = (
+                            f"已核对并进入“{context.ios_group_name}”群，已停止操作。"
+                        )
                     emit_result(context, result)
                     if result.success:
+                        if platform == "ios" and step.id == "search":
+                            context.ios_search_verified = True
                         break
                     if last_step and result.verification:
                         verification = result.verification
@@ -354,7 +410,9 @@ class ExecutionRun:
         )
         with execution_metrics(route) as metrics:
             try:
-                route, route_reason, skill = resolve_route(self.message, self.request)
+                route, route_reason, skill = resolve_route(
+                    self.message, self.request, self.device_id
+                )
                 metrics.route = route
                 await self._events.put(
                     {
@@ -442,7 +500,7 @@ class ExecutionRun:
                 self.context.stop(
                     self.message,
                     "invalid_execution_request",
-                    "技能、版本或参数无效，请重新选择技能。",
+                    "技能、版本或参数无效；RMQ1 首版请使用搜索并进入微信群技能并填写精确群名。",
                 )
             except Exception:
                 self.context.stop(

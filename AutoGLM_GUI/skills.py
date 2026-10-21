@@ -115,6 +115,9 @@ class SkillDefinition(BaseModel):
     max_seconds: int = Field(default=300, ge=10, le=1800, strict=True)
     enabled: bool = True
     builtin: bool = False
+    platforms: list[Literal["android", "ios", "harmonyos"]] = Field(
+        default_factory=lambda: ["android"], min_length=1, max_length=3
+    )
 
     @model_validator(mode="after")
     def validate_templates(self) -> SkillDefinition:
@@ -185,6 +188,7 @@ class SkillDefinition(BaseModel):
             ),
             max_steps=self.max_steps,
             max_seconds=self.max_seconds,
+            platforms=tuple(self.platforms),
         )
 
 
@@ -212,6 +216,7 @@ class CompiledSkill:
     success_criteria: tuple[str, ...]
     max_steps: int
     max_seconds: int
+    platforms: tuple[str, ...] = ("android",)
 
 
 def _builtins() -> list[SkillDefinition]:
@@ -302,6 +307,53 @@ def _builtins() -> list[SkillDefinition]:
             builtin=True,
         )
         for identifier, name, goal, steps, criteria in definitions
+    ] + [
+        SkillDefinition(
+            id="ios_wechat_open_group",
+            name="搜索并进入微信群",
+            description="从已解锁的 iPhone 主屏幕打开微信，核对精确群名并进入；不发送消息。需要系统简体拼音全键盘。",
+            platforms=["ios"],
+            parameters={"group_name": SkillParameter(description="精确群名，例如青城")},
+            goal="搜索并进入微信群 {{group_name}}，进入后立即停止。",
+            constraints=constraints
+            + [
+                "只在系统搜索或微信搜索框输入；不得触碰聊天输入区，不读取或滚动聊天历史。",
+                "拼音和候选字不等于目标汉字；只认最终搜索框汉字和群聊分类，重名或无结果立即停止。",
+            ],
+            steps=[
+                SkillStep(
+                    id="open",
+                    effect="navigation",
+                    max_steps=20,
+                    goal="从 iPhone 主屏幕打开微信。图标不可见时下拉系统搜索，通过屏幕拼音键盘搜索微信并打开应用结果。",
+                    success_criteria=["已登录的微信主界面可见，不是认证或权限弹窗。"],
+                ),
+                SkillStep(
+                    id="search",
+                    effect="navigation",
+                    max_steps=20,
+                    max_resumes=1,
+                    goal="在微信搜索框输入 {{group_name}}，核对最终汉字，并找到群聊分类中的唯一精确同名结果。停在结果页。",
+                    success_criteria=[
+                        "微信搜索框最终汉字与 {{group_name}} 完全一致。",
+                        "群聊分类中只有一个名称精确匹配 {{group_name}} 的候选。",
+                    ],
+                ),
+                SkillStep(
+                    id="enter",
+                    effect="navigation",
+                    max_steps=10,
+                    goal="打开刚核对的唯一群聊 {{group_name}}，核对群标题后立即停止，不操作聊天内容或输入区。",
+                    success_criteria=[
+                        "当前是群聊页面，群标题与 {{group_name}} 完全一致；人数是独立元信息。"
+                    ],
+                ),
+            ],
+            success_criteria=["当前群聊标题与 {{group_name}} 完全一致。"],
+            max_steps=60,
+            max_seconds=600,
+            builtin=True,
+        )
     ]
 
 

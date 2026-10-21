@@ -19,7 +19,13 @@ import {
 } from '../lib/rmq1-session';
 import { usePageVisibility } from '../hooks/usePageVisibility';
 
-export function Rmq1Panel({ deviceId }: { deviceId: string }) {
+export function Rmq1Panel({
+  deviceId,
+  readOnly = false,
+}: {
+  deviceId: string;
+  readOnly?: boolean;
+}) {
   const t = useTranslation();
   const settingsId = useId();
   const [showSettings, setShowSettings] = useState(false);
@@ -121,7 +127,7 @@ export function Rmq1Panel({ deviceId }: { deviceId: string }) {
     if (!element) return;
     const wheel = (event: WheelEvent) => {
       event.preventDefault();
-      if (drag.current !== null) return;
+      if (readOnly || drag.current !== null) return;
       const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
       const size = horizontal ? element.clientWidth : element.clientHeight;
       const unit =
@@ -132,7 +138,7 @@ export function Rmq1Panel({ deviceId }: { deviceId: string }) {
     };
     element.addEventListener('wheel', wheel, { passive: false });
     return () => element.removeEventListener('wheel', wheel);
-  }, [hasFrame]);
+  }, [hasFrame, readOnly]);
 
   const finish = (event: PointerEvent<HTMLImageElement>) => {
     if (drag.current !== event.pointerId) return;
@@ -260,13 +266,15 @@ export function Rmq1Panel({ deviceId }: { deviceId: string }) {
                 height: `${100 / rect.height}%`,
                 left: `${(-100 * rect.x) / rect.width}%`,
                 top: `${(-100 * rect.y) / rect.height}%`,
-                cursor: busy || uncertain ? 'not-allowed' : 'crosshair',
+                cursor:
+                  readOnly || busy || uncertain ? 'not-allowed' : 'crosshair',
               }}
               onLoad={() => {
                 requestAnimationFrame(() => displayed(frame));
               }}
               onPointerDown={event => {
                 if (
+                  readOnly ||
                   event.button !== 0 ||
                   !event.isPrimary ||
                   drag.current !== null

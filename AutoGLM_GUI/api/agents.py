@@ -19,6 +19,7 @@ from AutoGLM_GUI.schemas import (
     ResetRequest,
     StatusResponse,
 )
+from AutoGLM_GUI.config_manager import IPhoneVisionConfig
 from AutoGLM_GUI.version import APP_VERSION
 from AutoGLM_GUI.types import SUPPORTED_AGENT_TYPES, normalize_agent_type
 
@@ -216,6 +217,7 @@ def get_config_endpoint() -> ConfigResponse:
     conflicts = config_manager.detect_conflicts()
 
     return ConfigResponse(
+        iphone_vision=effective_config.iphone_vision,
         base_url=effective_config.base_url,
         model_name=effective_config.model_name,
         api_key=effective_config.api_key if effective_config.api_key != "EMPTY" else "",
@@ -296,6 +298,8 @@ def save_config_endpoint(request: ConfigSaveRequest) -> dict[str, Any]:
                 merge_mode=True,
                 default_max_steps_set="default_max_steps" in provided_fields,
                 layered_max_turns_set="layered_max_turns" in provided_fields,
+                iphone_vision=request.iphone_vision,
+                iphone_vision_set="iphone_vision" in provided_fields,
             )
 
             if not success:
@@ -466,3 +470,100 @@ def model_connection_check(req: ModelConnectionRequest) -> dict[str, Any]:
         return {"success": False, "message": "连接超时"}
     except Exception as e:
         return {"success": False, "message": str(e)[:60]}
+
+
+@router.post("/api/config/iphone-vision-check")
+async def iphone_vision_check(request: IPhoneVisionConfig) -> dict[str, Any]:
+    """Check image+tool input and read-only JSON with a generated image, no phone."""
+    import base64
+    import io
+    from PIL import Image, ImageDraw
+    from openai import AsyncOpenAI
+    from AutoGLM_GUI.model import MessageBuilder
+
+    image = Image.new("RGB", (64, 64), "blue")
+    ImageDraw.Draw(image).rectangle((20, 20, 44, 44), fill="red")
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode()
+    try:
+        async with asyncio.timeout(100):
+            async with AsyncOpenAI(
+                base_url=request.base_url,
+                api_key=request.api_key or "EMPTY",
+                timeout=45,
+                max_retries=0,
+            ) as client:
+                extra = (
+                    {"thinking": {"type": "disabled"}}
+                    if request.model_name == "deepseek-flash"
+                    else {}
+                )
+                messages: Any = [
+                    MessageBuilder.create_user_message(
+                        "Inspect this image. Report the color of its center, using the provided tool.",
+                        encoded,
+                    )
+                ]
+                response = await client.chat.completions.create(
+                    model=request.model_name,
+                    messages=messages,
+                    tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "report_color",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "color": {
+                                            "type": "string",
+                                            "enum": ["red", "blue", "green"],
+                                        }
+                                    },
+                                    "required": ["color"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        }
+                    ],
+                    tool_choice="required",
+                    parallel_tool_calls=False,
+                    max_tokens=1024,
+                    temperature=request.temperature,
+                    extra_body=extra,
+                )
+                calls = response.choices[0].message.tool_calls or []
+                if (
+                    len(calls) != 1
+                    or calls[0].type != "function"
+                    or calls[0].function.name != "report_color"
+                    or json.loads(calls[0].function.arguments) != {"color": "red"}
+                ):
+                    raise ValueError("vision_tool_check_failed")
+                messages = [
+                    MessageBuilder.create_user_message(
+                        'Inspect the center color of this image. Return only JSON: {"color":"observed color"}.',
+                        encoded,
+                    )
+                ]
+                response = await client.chat.completions.create(
+                    model=request.model_name,
+                    messages=messages,
+                    max_tokens=1024,
+                    temperature=request.temperature,
+                    extra_body=extra,
+                )
+                if json.loads(response.choices[0].message.content or "") != {
+                    "color": "red"
+                }:
+                    raise ValueError("readonly_check_failed")
+        return {
+            "success": True,
+            "message": "测试图片、动作工具调用及只读 JSON 验收均通过；尚未验证真机效果。",
+        }
+    except Exception:
+        return {
+            "success": False,
+            "message": "iPhone 视觉能力测试未通过，请检查服务、模型及密钥；需支持图片、工具调用和只读 JSON。",
+        }

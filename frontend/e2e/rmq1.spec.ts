@@ -594,3 +594,277 @@ for (const mode of ['chatkit', 'classic']) {
     expect(taskRequests).toEqual([]);
   });
 }
+
+async function enableIphoneAI(page: Page) {
+  await page.route('**/api/config', route =>
+    route.fulfill({
+      json: {
+        base_url: 'https://android.example/v1',
+        model_name: 'android-model',
+        api_key: '',
+        source: 'fixture',
+        agent_type: 'glm-async',
+        iphone_vision: {
+          base_url: 'https://iphone.example/v1',
+          model_name: 'iphone-model',
+          api_key: '',
+          temperature: 0,
+        },
+      },
+    })
+  );
+}
+
+test('submits the iPhone group skill and restores its verified result', async ({
+  page,
+}) => {
+  await mockLive(page);
+  await enableIphoneAI(page);
+  let submitted: Record<string, unknown> | undefined;
+  let submittedOnce = false;
+  const session = {
+    id: 'iphone-session',
+    kind: 'chat',
+    mode: 'layered',
+    device_id: device.id,
+    device_serial: device.serial,
+    status: 'open',
+  };
+  const task = {
+    id: 'iphone-skill-task',
+    session_id: session.id,
+    source: 'chat',
+    executor_key: 'layered_chat',
+    device_id: device.id,
+    device_serial: device.serial,
+    status: 'SUCCEEDED',
+    input_text: '搜索并进入微信群',
+    final_message: '已核对并进入青城群',
+    step_count: 9,
+    created_at: '2026-10-21T01:00:00Z',
+    stop_reason: 'goal_verified',
+  };
+  await page.route('**/api/task-sessions', route =>
+    route.fulfill({ json: session })
+  );
+  await page.route('**/api/task-sessions/iphone-session', route =>
+    route.fulfill({ json: session })
+  );
+  await page.route('**/api/task-sessions/iphone-session/tasks*', route => {
+    if (route.request().method() === 'POST') {
+      submitted = route.request().postDataJSON();
+      submittedOnce = true;
+      return route.fulfill({ json: task });
+    }
+    return route.fulfill({
+      json: {
+        tasks: submittedOnce ? [task] : [],
+        total: submittedOnce ? 1 : 0,
+      },
+    });
+  });
+  await page.route('**/api/tasks/iphone-skill-task/events*', route =>
+    route.fulfill({
+      json: {
+        events: [
+          {
+            task_id: task.id,
+            seq: 1,
+            event_type: 'done',
+            role: 'assistant',
+            created_at: task.created_at,
+            payload: {
+              success: true,
+              result_status: 'completed',
+              content: task.final_message,
+            },
+          },
+        ],
+      },
+    })
+  );
+  await page.goto(`/chat?serial=${encodeURIComponent(device.serial)}`);
+  await page.getByLabel('精确群名，例如青城').fill('青城');
+  const options = page.getByTestId('execution-options');
+  await expect(options.locator('option[value="planner"]')).toHaveCount(0);
+  await expect(options.locator('option[value="direct"]')).toHaveCount(0);
+  await expect(options.locator('option[value="open_wechat"]')).toHaveCount(0);
+  await page.getByRole('button', { name: '提交任务', exact: true }).click();
+  await expect
+    .poll(() => submitted)
+    .toMatchObject({
+      execution: {
+        route: 'skill',
+        skill_id: 'ios_wechat_open_group',
+        skill_version: 1,
+        parameters: { group_name: '青城' },
+        max_steps: 60,
+        max_seconds: 600,
+      },
+    });
+  await expect(
+    page.getByText(task.final_message, { exact: true })
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByText(task.final_message, { exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole('img', { name: 'iPhone 实时画面' })
+  ).toBeVisible();
+  const chatBox = await bounds(
+    page.getByLabel('iPhone AI 助手', { exact: true })
+  );
+  const phoneBox = await bounds(page.getByTestId('phone-monitor'));
+  expect(chatBox.x + chatBox.width).toBeLessThanOrEqual(phoneBox.x);
+  await page.setViewportSize({ width: 680, height: 1000 });
+  await expect
+    .poll(async () => {
+      const chat = await bounds(
+        page.getByLabel('iPhone AI 助手', { exact: true })
+      );
+      const monitor = await bounds(page.getByTestId('phone-monitor'));
+      return monitor.y >= chat.y + chat.height;
+    })
+    .toBe(true);
+  const submitBox = await bounds(
+    page.getByRole('button', { name: '提交任务', exact: true })
+  );
+  const cardBox = await bounds(
+    page.getByLabel('iPhone AI 助手', { exact: true })
+  );
+  expect(submitBox.y + submitBox.height).toBeLessThanOrEqual(
+    cardBox.y + cardBox.height
+  );
+  await page.screenshot({ path: 'test-results/rmq1-ai-mobile.png' });
+});
+
+test('keeps iPhone manual input disabled until cancellation settles', async ({
+  page,
+}) => {
+  const live = await mockLive(page);
+  await enableIphoneAI(page);
+  let releaseStream: (() => void) | undefined;
+  const task = {
+    id: 'iphone-running',
+    session_id: 'iphone-session',
+    source: 'chat',
+    executor_key: 'layered_chat',
+    device_id: device.id,
+    device_serial: device.serial,
+    status: 'RUNNING',
+    input_text: '搜索并进入微信群',
+    step_count: 1,
+    created_at: '2026-10-21T01:00:00Z',
+  };
+  await page.route('**/api/task-sessions', route =>
+    route.fulfill({
+      json: {
+        id: 'iphone-session',
+        kind: 'chat',
+        mode: 'layered',
+        device_id: device.id,
+        device_serial: device.serial,
+        status: 'open',
+      },
+    })
+  );
+  await page.route('**/api/task-sessions/iphone-session/tasks*', route =>
+    route.fulfill({
+      json:
+        route.request().method() === 'POST' ? task : { tasks: [], total: 0 },
+    })
+  );
+  await page.route('**/api/tasks/iphone-running/events*', route =>
+    route.fulfill({ json: { events: [] } })
+  );
+  await page.route('**/api/tasks/iphone-running/stream*', async route => {
+    await new Promise<void>(resolve => {
+      releaseStream = resolve;
+    });
+    const event = {
+      task_id: task.id,
+      seq: 1,
+      event_type: 'cancelled',
+      role: 'assistant',
+      created_at: task.created_at,
+      payload: { message: '已停止并释放输入', result_status: 'cancelled' },
+    };
+    await route.fulfill({
+      contentType: 'text/event-stream',
+      body: `event: cancelled\ndata: ${JSON.stringify(event)}\n\n`,
+    });
+  });
+  await page.route('**/api/tasks/iphone-running/cancel', route =>
+    route.fulfill({ json: { success: true, task } })
+  );
+  await page.goto(`/chat?serial=${encodeURIComponent(device.serial)}`);
+  await page.getByLabel('精确群名，例如青城').fill('青城');
+  await page.getByRole('button', { name: '提交任务', exact: true }).click();
+  const stop = page.getByRole('button', { name: '停止并接管', exact: true });
+  await expect(stop).toBeVisible();
+  const phone = page.getByTestId('rmq1-phone-viewport');
+  await phone.click();
+  expect(live.messages.filter(message => message.type === 'down')).toHaveLength(
+    0
+  );
+  await stop.click();
+  await expect(stop).toBeDisabled();
+  await phone.click();
+  expect(live.messages.filter(message => message.type === 'down')).toHaveLength(
+    0
+  );
+  await expect.poll(() => !!releaseStream).toBe(true);
+  releaseStream?.();
+  await expect(stop).not.toBeVisible();
+  await expect(
+    page.getByText('已停止并释放输入', { exact: true })
+  ).toBeVisible();
+});
+
+test('edits separate iPhone settings and probes generated images', async ({
+  page,
+}) => {
+  await mockLive(page);
+  let saved: Record<string, unknown> | undefined;
+  let probed: Record<string, unknown> | undefined;
+  await page.route('**/api/config', route => {
+    if (route.request().method() === 'POST') {
+      saved = route.request().postDataJSON();
+      return route.fulfill({ json: { success: true } });
+    }
+    return route.fulfill({
+      json: {
+        base_url: 'https://android.example/v1',
+        model_name: 'android-model',
+        api_key: '',
+        agent_type: 'glm-async',
+      },
+    });
+  });
+  await page.route('**/api/config/iphone-vision-check', route => {
+    probed = route.request().postDataJSON();
+    return route.fulfill({
+      json: { success: true, message: '测试图片能力通过' },
+    });
+  });
+  await page.goto(`/chat?serial=${encodeURIComponent(device.serial)}`);
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('tab', { name: 'iPhone 视觉模型', exact: true }).click();
+  await page.getByLabel('启用 iPhone AI', { exact: true }).check();
+  await page.getByLabel('iPhone 服务地址').fill('https://iphone.example/v1');
+  await page.getByLabel('iPhone 模型名称').fill('ios-vision');
+  await page.getByLabel('iPhone API Key').fill('fixture-key');
+  await page
+    .getByRole('button', { name: '测试 iPhone 视觉能力', exact: true })
+    .click();
+  await expect(page.getByText('测试图片能力通过')).toBeVisible();
+  expect(probed).toMatchObject({ model_name: 'ios-vision' });
+  await page.getByRole('button', { name: '保存配置', exact: true }).click();
+  await expect
+    .poll(() => saved)
+    .toMatchObject({
+      model_name: 'android-model',
+      iphone_vision: { model_name: 'ios-vision', api_key: 'fixture-key' },
+    });
+});

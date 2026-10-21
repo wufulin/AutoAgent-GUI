@@ -8,7 +8,7 @@ import os
 import time
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
@@ -24,6 +24,8 @@ from pydantic import (
 )
 
 from AutoGLM_GUI.device_manager import DeviceManager
+from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
+from AutoGLM_GUI.exceptions import DeviceBusyError
 from AutoGLM_GUI.devices.rmq1_live import LiveGesture
 from AutoGLM_GUI.devices.rmq1_transport import (
     RMQ1Error,
@@ -74,7 +76,7 @@ def safe_error(error: Exception) -> HTTPException:
     return HTTPException(
         status_code=409,
         detail=str(error)
-        if isinstance(error, RMQ1Error)
+        if isinstance(error, (RMQ1Error, DeviceBusyError))
         else "RMQ1 操作失败，请检查连接",
     )
 
@@ -102,10 +104,25 @@ def connect(request: ConnectRequest) -> dict[str, Any]:
 
 
 @router.post("/disconnect")
-def disconnect(request: DeviceRequest) -> dict[str, bool]:
+async def disconnect(request: DeviceRequest) -> dict[str, bool]:
+    manager = PhoneAgentManager.get_instance()
+    owner = f"rmq1-disconnect:{uuid4().hex}"
     try:
-        DeviceManager.get_instance().remove_rmq1_device(request.device_id)
-        return {"success": True}
+        await manager.acquire_manual_control(request.device_id, owner)
+
+        async def perform() -> dict[str, bool]:
+            try:
+                await asyncio.to_thread(
+                    DeviceManager.get_instance().remove_rmq1_device, request.device_id
+                )
+                return {"success": True}
+            finally:
+                await manager.release_manual_control(request.device_id, owner)
+
+        task = asyncio.create_task(perform())
+        _manual_operations.add(task)
+        task.add_done_callback(_manual_finished)
+        return await asyncio.shield(task)
     except Exception as error:
         raise safe_error(error) from None
 
@@ -118,22 +135,73 @@ def observe(request: DeviceRequest) -> dict[str, Any]:
         raise safe_error(error) from None
 
 
+_manual_operations: set[asyncio.Task[Any]] = set()
+
+
+def _manual_finished(done: asyncio.Task[Any]) -> None:
+    _manual_operations.discard(done)
+    if not done.cancelled():
+        done.exception()
+
+
+async def _settle_manual(device_id: str, owner: str, result: dict[str, Any]) -> None:
+    await PhoneAgentManager.get_instance().settle_rmq1_manual(
+        device_id,
+        owner,
+        bool(result.get("outcome") == "unknown" or result.get("recovery_required")),
+    )
+
+
 @router.post("/gesture", response_model=None)
-def gesture(request: GestureRequest) -> dict[str, Any] | JSONResponse:
+async def gesture(request: GestureRequest) -> dict[str, Any] | JSONResponse:
     device = None
+    owner = f"rmq1-http:{uuid4().hex}"
     try:
+        manager = PhoneAgentManager.get_instance()
         device = DeviceManager.get_instance().get_rmq1_device(request.device_id)
-        return device.gesture(
-            action_id=str(request.action_id),
-            session_id=request.session_id,
-            frame_id=request.frame_id,
-            start=request.start,
-            end=request.end,
-            duration_ms=request.duration_ms,
+        cached = device.cached_action(
+            str(request.action_id),
+            repr(
+                (
+                    request.session_id,
+                    request.frame_id,
+                    request.start,
+                    request.end,
+                    request.duration_ms,
+                )
+            ),
         )
-    except RMQ1Error as error:
-        # Gesture catches all exceptions after its durable marker/HID boundary.
-        # These validation failures therefore represent no new HID writes.
+        if cached is not None:
+            return cached
+        await manager.acquire_manual_control(request.device_id, owner)
+
+        async def perform() -> dict[str, Any]:
+            try:
+                result = await asyncio.to_thread(
+                    device.gesture,
+                    action_id=str(request.action_id),
+                    session_id=request.session_id,
+                    frame_id=request.frame_id,
+                    start=request.start,
+                    end=request.end,
+                    duration_ms=request.duration_ms,
+                )
+            except RMQ1Error:
+                await manager.release_manual_control(request.device_id, owner)
+                raise
+            except BaseException:
+                await manager.quarantine_manual_control(request.device_id, owner)
+                raise
+            else:
+                await _settle_manual(request.device_id, owner, result)
+                return result
+
+        task = asyncio.create_task(perform())
+        _manual_operations.add(task)
+
+        task.add_done_callback(_manual_finished)
+        return await asyncio.shield(task)
+    except (RMQ1Error, DeviceBusyError) as error:
         return JSONResponse(
             status_code=409,
             content={
@@ -150,10 +218,10 @@ def gesture(request: GestureRequest) -> dict[str, Any] | JSONResponse:
 
 
 @router.post("/recover")
-def recover(request: RecoveryRequest) -> dict[str, bool]:
+async def recover(request: RecoveryRequest) -> dict[str, bool]:
     try:
-        DeviceManager.get_instance().get_rmq1_device(request.device_id).recover(
-            request.session_id
+        await PhoneAgentManager.get_instance().recover_rmq1_control(
+            request.device_id, request.session_id
         )
         return {"success": True}
     except Exception as error:
@@ -219,7 +287,7 @@ async def _open_socket(websocket: WebSocket):
     except Exception as error:
         message = (
             str(error)
-            if isinstance(error, RMQ1Error)
+            if isinstance(error, (RMQ1Error, DeviceBusyError))
             else "RMQ1 连接不可用，请重新连接"
         )
         await websocket.send_json({"type": "error", "error": message})
@@ -271,7 +339,7 @@ async def preview_socket(websocket: WebSocket) -> None:
                     {
                         "type": "error",
                         "error": str(error)
-                        if isinstance(error, RMQ1Error)
+                        if isinstance(error, (RMQ1Error, DeviceBusyError))
                         else "RMQ1 预览已断开，请重新连接",
                     }
                 ),
@@ -307,7 +375,12 @@ async def control_socket(websocket: WebSocket) -> None:
 
     async def writer() -> None:
         while True:
-            await send(await updates.get())
+            event = await updates.get()
+            if event.get("type") == "result":
+                await _settle_manual(
+                    device.device_id, "rmq1-live:" + str(event["action_id"]), event
+                )
+            await send(event)
 
     async def reader() -> None:
         nonlocal active
@@ -335,8 +408,32 @@ async def control_socket(websocket: WebSocket) -> None:
                 raise RMQ1Error("操作 ID 已被其他请求使用")
             try:
                 if isinstance(message, PointerDown):
+                    cached = device.cached_action(
+                        action_id,
+                        repr(
+                            (
+                                "live",
+                                message.session_id,
+                                message.frame_id,
+                                message.point,
+                            )
+                        ),
+                    )
+                    if cached is not None:
+                        await send({"type": "result", **cached})
+                        continue
                     if active is not None and not active.done.is_set():
                         raise RMQ1Error("另一个操作正在执行")
+                    if active is not None and active.done.is_set():
+                        await _settle_manual(
+                            device.device_id,
+                            f"rmq1-live:{active.action_id}",
+                            {"recovery_required": device.recovery_required},
+                        )
+                    owner = f"rmq1-live:{action_id}"
+                    await PhoneAgentManager.get_instance().acquire_manual_control(
+                        device.device_id, owner
+                    )
                     candidate = LiveGesture(
                         device,
                         action_id=action_id,
@@ -345,7 +442,13 @@ async def control_socket(websocket: WebSocket) -> None:
                         point=message.point,
                         notify=notify,
                     )
-                    candidate.start()
+                    try:
+                        candidate.start()
+                    except BaseException:
+                        await PhoneAgentManager.get_instance().release_manual_control(
+                            device.device_id, owner
+                        )
+                        raise
                     active = candidate
                 elif active is None or active.action_id != action_id:
                     raise RMQ1Error("操作 ID 不匹配")
@@ -353,7 +456,7 @@ async def control_socket(websocket: WebSocket) -> None:
                     active.cancel()
                 else:
                     active.update(message.point, finish=message.type == "up")
-            except RMQ1Error as error:
+            except (RMQ1Error, DeviceBusyError) as error:
                 await send(
                     {
                         "type": "result",
@@ -378,7 +481,7 @@ async def control_socket(websocket: WebSocket) -> None:
                 {
                     "type": "error",
                     "error": str(error)
-                    if isinstance(error, RMQ1Error)
+                    if isinstance(error, (RMQ1Error, DeviceBusyError))
                     else "RMQ1 控制已断开，请重新连接",
                 }
             )
@@ -395,3 +498,11 @@ async def control_socket(websocket: WebSocket) -> None:
             await asyncio.gather(*tasks, return_exceptions=True)
             if active is not None:
                 await asyncio.to_thread(active.join)
+                await _settle_manual(
+                    device.device_id,
+                    f"rmq1-live:{active.action_id}",
+                    {
+                        "recovery_required": device.recovery_required
+                        or not active.done.is_set()
+                    },
+                )
