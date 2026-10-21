@@ -205,12 +205,17 @@ async def submit_task_session_task(
     if session is None:
         raise HTTPException(status_code=404, detail="Task session not found")
 
+    if request.execution is not None and str(session["mode"]) != "layered":
+        raise HTTPException(
+            status_code=422, detail="Execution routing requires a layered session"
+        )
     task = await task_manager.submit_chat_task(
         session_id=session_id,
         device_id=str(session["device_id"]),
         device_serial=str(session["device_serial"]),
         message=request.message,
         attachments=[attachment.model_dump() for attachment in request.attachments],
+        **({"execution": request.execution.model_dump()} if request.execution else {}),
     )
     return _task_run_response(task)
 

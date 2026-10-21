@@ -41,10 +41,10 @@ export function NavigationSidebar({ className }: NavigationSidebarProps) {
       path: '/chat',
     },
     {
-      id: 'workflows',
+      id: 'skills',
       icon: ListChecks,
-      label: t.navigation.workflows,
-      path: '/workflows',
+      label: t.navigation.skills,
+      path: '/skills',
     },
     {
       id: 'history',

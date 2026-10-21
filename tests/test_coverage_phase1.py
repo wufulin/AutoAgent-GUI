@@ -17,46 +17,6 @@ from AutoGLM_GUI.models.history import (
     StepTimingRecord,
     TraceSummaryRecord,
 )
-from AutoGLM_GUI.workflow_manager import WorkflowManager
-
-
-@pytest.fixture
-def workflow_manager(tmp_path: Path) -> WorkflowManager:
-    WorkflowManager._instance = None
-    manager = WorkflowManager()
-    manager._workflows_path = tmp_path / "workflows.json"
-    manager._file_cache = None
-    manager._file_mtime = None
-    yield manager
-    WorkflowManager._instance = None
-
-
-def test_workflow_manager_crud_cache_and_bad_json(
-    workflow_manager: WorkflowManager,
-) -> None:
-    assert workflow_manager.list_workflows() == []
-
-    created = workflow_manager.create_workflow("Morning", "sign in")
-    cached = workflow_manager.list_workflows()
-    updated = workflow_manager.update_workflow(created["uuid"], "Evening", "sign out")
-
-    assert cached == [created]
-    assert updated == {
-        "uuid": created["uuid"],
-        "name": "Evening",
-        "text": "sign out",
-    }
-    assert workflow_manager.get_workflow(created["uuid"]) == updated
-    assert workflow_manager.get_workflow("missing") is None
-    assert workflow_manager.update_workflow("missing", "x", "y") is None
-    assert workflow_manager.delete_workflow("missing") is False
-    assert workflow_manager.delete_workflow(created["uuid"]) is True
-    assert workflow_manager.list_workflows() == []
-
-    workflow_manager._workflows_path.write_text("{bad", encoding="utf-8")
-    workflow_manager._file_cache = None
-    workflow_manager._file_mtime = None
-    assert workflow_manager.list_workflows() == []
 
 
 @pytest.fixture

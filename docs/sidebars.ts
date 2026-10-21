@@ -20,7 +20,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'guide/connect-device',
         'guide/configure-model',
-        'guide/use-workflow',
+        'guide/use-skills',
         'guide/schedule-task',
         'guide/view-history',
         'guide/realtime-control',
@@ -55,6 +55,7 @@ const sidebars: SidebarsConfig = {
         'explanation/layered-agent',
         'explanation/layered-agent-analysis',
         'explanation/observability',
+        'explanation/execution-evaluation',
       ],
     },
     'faq',

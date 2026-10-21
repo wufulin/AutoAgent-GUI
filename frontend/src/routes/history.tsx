@@ -1,3 +1,4 @@
+import { ExecutionSummaryCard } from '../components/ExecutionSummaryCard';
 import { createFileRoute } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
 import {
@@ -630,6 +631,9 @@ export function HistoryComponent() {
                   <p className="text-sm text-slate-900 dark:text-slate-100">
                     {selectedRecord.final_message}
                   </p>
+                  <ExecutionSummaryCard
+                    summary={selectedRecord.execution_summary}
+                  />
                   {selectedRecord.stop_reason && (
                     <p className="text-xs text-slate-500">
                       {t.chatkit.stopReason}: {selectedRecord.stop_reason}

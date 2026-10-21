@@ -35,7 +35,7 @@ sidebar_position: 50
 
 ## 如何让任务自动定时执行？
 
-先把任务存成 [Workflow](./guide/use-workflow.md)，再[创建定时任务](./guide/schedule-task.md)用 Cron 表达式调度。配合 [Docker 部署](./guide/deploy-docker.md)到服务器即可 7x24 自动运行。
+先把任务存成 [技能](./guide/use-skills.md)，再[创建定时任务](./guide/schedule-task.md)用 Cron 表达式调度。配合 [Docker 部署](./guide/deploy-docker.md)到服务器即可 7x24 自动运行。
 
 ## 实时画面为什么是黑的 / 不显示？
 

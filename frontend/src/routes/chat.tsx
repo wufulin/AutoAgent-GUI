@@ -1244,45 +1244,17 @@ export function ChatComponent() {
                 </div>
               ) : chatMode === 'chatkit' ? (
                 <div className="w-full flex items-stretch justify-center">
-                  {config &&
-                  (!config.decision_base_url || !config.decision_model_name) ? (
-                    <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
-                      <h2 className="text-lg font-semibold">
-                        {t.chat.plannerSetupTitle}
-                      </h2>
-                      <p className="max-w-md text-sm text-slate-500 dark:text-slate-400">
-                        {t.chat.plannerSetupHint}
-                      </p>
-                      <Button
-                        onClick={() => {
-                          setTempChatMode(chatMode);
-                          setConfigTab('decision');
-                          setShowConfig(true);
-                        }}
-                      >
-                        {t.chat.configurePlanner}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          setTempChatMode(chatMode);
-                          setConfigTab('advanced');
-                          setShowConfig(true);
-                        }}
-                      >
-                        {t.chat.advancedSettings}
-                      </Button>
-                    </div>
-                  ) : (
-                    <ChatKitPanel
-                      deviceId={currentDevice.id}
-                      deviceSerial={currentDevice.serial}
-                      deviceName={currentDevice.model}
-                      deviceConnectionType={currentDevice.connection_type}
-                      isVisible={currentDevice.id === currentDeviceId}
-                      unlimitedStepsEnabled={config?.default_max_steps === null}
-                    />
-                  )}
+                  <ChatKitPanel
+                    plannerConfigured={Boolean(
+                      config?.decision_base_url && config?.decision_model_name
+                    )}
+                    deviceId={currentDevice.id}
+                    deviceSerial={currentDevice.serial}
+                    deviceName={currentDevice.model}
+                    deviceConnectionType={currentDevice.connection_type}
+                    isVisible={currentDevice.id === currentDeviceId}
+                    unlimitedStepsEnabled={config?.default_max_steps === null}
+                  />
                 </div>
               ) : (
                 <div className="w-full flex items-stretch justify-center">

@@ -237,8 +237,8 @@ test.describe('Docs screenshots', () => {
       await page.waitForTimeout(1500);
     });
 
-    await shot(page, 'workflows-empty', async () => {
-      await page.goto('/workflows');
+    await shot(page, 'skills-empty', async () => {
+      await page.goto('/skills');
       await page.waitForTimeout(1200);
     });
 
@@ -314,7 +314,7 @@ test.describe('Docs screenshots', () => {
     });
     await closeDialog(page);
 
-    // Workflow quick-run popover on chat input
+    // Skill quick-run popover on chat input
     await shot(page, 'chat-input', async () => {
       await page.goto(chatUrl);
       await expect(page.locator('textarea')).toBeVisible({ timeout: 15000 });
@@ -324,12 +324,12 @@ test.describe('Docs screenshots', () => {
       await page.waitForTimeout(500);
     });
 
-    // ---- Workflows dialog ----
-    await page.goto('/workflows');
+    // ---- Skills dialog ----
+    await page.goto('/skills');
     await page.waitForTimeout(1000);
-    await shotDialog(page, 'workflow-create', async () => {
+    await shotDialog(page, 'skill-create', async () => {
       await page
-        .getByRole('button', { name: /新建 Workflow|新建/ })
+        .getByRole('button', { name: /新建 Skill|新建/ })
         .first()
         .click();
     });
@@ -388,35 +388,49 @@ test.describe('Docs screenshots', () => {
     const serial = await setupMockDeviceAndConfig(request, page);
     const chatUrl = `/chat?serial=${encodeURIComponent(serial)}&mode=classic`;
 
-    // --- Seed two workflows via API ---
-    let workflowUuid = '';
-    try {
-      const wf1 = await request.post(`${backend_url}/api/workflows`, {
-        data: {
-          name: '订霸王茶姬',
-          text: '去美团点一杯霸王茶姬的伯牙绝弦，去冰，加珍珠',
-        },
-      });
-      const wf1Data = (await wf1.json()) as { uuid?: string };
-      workflowUuid = wf1Data?.uuid || '';
-      await request.post(`${backend_url}/api/workflows`, {
-        data: { name: '每日签到', text: '打开应用并完成每日签到领取积分' },
-      });
-    } catch (e) {
-      console.log('[seed] workflow failed:', String(e).split('\n')[0]);
-    }
+    // Seed a verifiable navigation skill.
+    const skillId = `docs-open-settings-${Date.now()}`;
+    await request.post(`${backend_url}/api/skills`, {
+      data: {
+        id: skillId,
+        version: 1,
+        name: '打开设置',
+        description: '打开系统设置并验证页面',
+        goal: '打开系统设置',
+        parameters: {},
+        preconditions: [],
+        constraints: [],
+        success_criteria: ['设置页面可见'],
+        steps: [
+          {
+            id: 'open',
+            goal: '打开设置',
+            success_criteria: ['设置页面可见'],
+            constraints: [],
+            max_steps: 8,
+            max_resumes: 1,
+            effect: 'navigation',
+          },
+        ],
+        max_steps: 20,
+        max_seconds: 120,
+        enabled: true,
+        builtin: false,
+      },
+    });
 
     // --- Seed a scheduled task via API ---
     try {
-      if (workflowUuid) {
+      if (skillId) {
         await request.post(`${backend_url}/api/scheduled-tasks`, {
           data: {
             name: '每天早八签到',
-            workflow_uuid: workflowUuid,
+            skill_id: skillId,
+            skill_version: 1,
+            parameters: {},
             device_serialnos: [serial],
             cron_expression: '0 8 * * *',
             enabled: true,
-            execution_mode: 'classic',
           },
         });
       }
@@ -449,8 +463,8 @@ test.describe('Docs screenshots', () => {
     expect((await request.post(`${llm_url}/test/reset`)).ok()).toBe(true);
 
     // --- Populated list pages ---
-    await shot(page, 'workflows-list', async () => {
-      await page.goto('/workflows');
+    await shot(page, 'skills-list', async () => {
+      await page.goto('/skills');
       await page.waitForTimeout(1500);
     });
     await shot(page, 'scheduled-list', async () => {
@@ -504,16 +518,10 @@ test.describe('Docs screenshots', () => {
       await expect(page.getByTitle('中止对话')).toBeHidden();
     });
 
-    // --- Quick-run workflow popover on the chat input ---
-    await shot(page, 'chat-workflow-popover', async () => {
-      await page.goto(chatUrl);
-      await expect(page.locator('textarea')).toBeVisible({ timeout: 15000 });
-      // The workflow quick-run button is the ListChecks lucide icon near the input
-      await page
-        .locator('button:has(svg.lucide-list-checks)')
-        .last()
-        .click({ timeout: 4000 });
-      await page.waitForTimeout(900);
+    // Execution controls are available in the layered chat entry.
+    await shot(page, 'chat-skill-selection', async () => {
+      await page.goto(chatUrl.replace('mode=classic', 'mode=chatkit'));
+      await page.getByLabel('执行方式', { exact: true }).selectOption('skill');
     });
 
     // --- Populated history list + detail (select the mock device, not the emulator) ---

@@ -227,7 +227,7 @@ def test_execute_layered_chat_counts_inner_steps_and_skips_legacy_history(
 ) -> None:
     import AutoGLM_GUI.device_manager as device_manager_module
     import AutoGLM_GUI.history_manager as history_manager_module
-    import AutoGLM_GUI.layered_agent_service as layered_service
+    import AutoGLM_GUI.execution as execution_service
 
     class FakeRun:
         def __init__(self) -> None:
@@ -270,11 +270,16 @@ def test_execute_layered_chat_counts_inner_steps_and_skips_legacy_history(
             }
 
     def fake_start_run(
-        *, task_id: str, session_id: str, message: str, device_id: str = ""
+        *,
+        task_id: str,
+        session_id: str,
+        message: str,
+        device_id: str = "",
+        execution=None,
     ) -> FakeRun:
         return FakeRun()
 
-    monkeypatch.setattr(layered_service, "start_run", fake_start_run)
+    monkeypatch.setattr(execution_service, "start_run", fake_start_run)
 
     legacy_history_calls: list[tuple[object, ...]] = []
 
@@ -327,7 +332,7 @@ def test_execute_layered_chat_counts_inner_steps_and_skips_legacy_history(
 def test_execute_layered_task_reraises_non_user_cancellation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import AutoGLM_GUI.layered_agent_service as layered_service
+    import AutoGLM_GUI.execution as execution_service
 
     class FakeRun:
         final_output = ""
@@ -340,11 +345,16 @@ def test_execute_layered_task_reraises_non_user_cancellation(
             yield
 
     def fake_start_run(
-        *, task_id: str, session_id: str, message: str, device_id: str = ""
+        *,
+        task_id: str,
+        session_id: str,
+        message: str,
+        device_id: str = "",
+        execution=None,
     ) -> FakeRun:
         return FakeRun()
 
-    monkeypatch.setattr(layered_service, "start_run", fake_start_run)
+    monkeypatch.setattr(execution_service, "start_run", fake_start_run)
 
     async def scenario() -> None:
         store = TaskStore(tmp_path / "tasks.db")
@@ -433,7 +443,7 @@ def test_layered_cancel_counts_steps_without_tool_result(
 ) -> None:
     from types import SimpleNamespace
 
-    import AutoGLM_GUI.layered_agent_service as layered_service
+    import AutoGLM_GUI.execution as execution_service
 
     class FakeRun:
         final_output = ""
@@ -457,7 +467,7 @@ def test_layered_cancel_counts_steps_without_tool_result(
             yield {"type": "subtask_progress", "payload": {"phase": phase}}
             yield {"type": "cancelled", "payload": {"message": "cancelled"}}
 
-    monkeypatch.setattr(layered_service, "start_run", lambda **kwargs: FakeRun())
+    monkeypatch.setattr(execution_service, "start_run", lambda **kwargs: FakeRun())
 
     async def scenario():
         store = TaskStore(tmp_path / "tasks.db")

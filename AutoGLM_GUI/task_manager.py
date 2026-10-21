@@ -8,6 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
+from AutoGLM_GUI.execution_models import ExecutionRequest
 from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.metrics import record_trace_latency_metrics
 from AutoGLM_GUI.task_store import (
@@ -42,10 +43,7 @@ class TaskManager:
         self._shutdown = False
         self.register_executor("classic_chat", self._execute_classic_chat)
         self.register_executor("layered_chat", self._execute_layered_chat)
-        self.register_executor("scheduled_workflow", self._execute_scheduled_workflow)
-        self.register_executor(
-            "scheduled_layered_workflow", self._execute_scheduled_layered_workflow
-        )
+        self.register_executor("scheduled_skill", self._execute_scheduled_skill)
 
     def register_executor(self, executor_key: str, executor: TaskExecutor) -> None:
         self._executors[executor_key] = executor
@@ -131,12 +129,17 @@ class TaskManager:
         device_serial: str,
         message: str,
         attachments: list[TaskImageAttachment] | None = None,
+        execution: dict[str, Any] | None = None,
     ) -> TaskRecord:
         session = await self.get_session(session_id)
         if session is None:
             raise ValueError(f"Session {session_id} not found")
 
         session_mode = str(session["mode"])
+        if execution is not None:
+            if session_mode != "layered":
+                raise ValueError("Execution routing requires a layered session")
+            execution = ExecutionRequest.model_validate(execution).model_dump()
         executor_key = {
             "classic": "classic_chat",
             "layered": "layered_chat",
@@ -152,15 +155,10 @@ class TaskManager:
             device_id=device_id,
             device_serial=device_serial,
             input_text=message,
-        )
-        await asyncio.to_thread(
-            self.store.append_event,
-            task_id=task["id"],
-            event_type="user_message",
-            role="user",
-            payload={
+            user_message={
                 "message": message,
                 "attachments": attachments or [],
+                "execution": execution,
             },
         )
         self._completion_events[task["id"]] = asyncio.Event()
@@ -187,27 +185,45 @@ class TaskManager:
             ]
         return []
 
+    def _get_execution_request(self, task_id: str) -> dict[str, Any] | None:
+        for event in self.store.list_task_events(task_id):
+            if event["event_type"] == "user_message":
+                value = event.get("payload", {}).get("execution")
+                return value if isinstance(value, dict) else None
+        return None
+
     async def enqueue_scheduled_task(
         self,
         *,
         scheduled_task_id: str,
-        workflow_uuid: str,
+        skill_id: str,
+        skill_version: int,
+        parameters: dict[str, Any],
         device_id: str,
         device_serial: str,
         input_text: str,
         schedule_fire_id: str,
-        executor_key: str = "scheduled_workflow",
+        max_steps: int = 60,
+        max_seconds: int = 300,
     ) -> TaskRecord:
+        execution = ExecutionRequest(
+            route="skill",
+            skill_id=skill_id,
+            skill_version=skill_version,
+            parameters=parameters,
+            max_steps=max_steps,
+            max_seconds=max_seconds,
+        )
         task = await asyncio.to_thread(
             self.store.create_task_run,
             source="scheduled",
-            executor_key=executor_key,
+            executor_key="scheduled_skill",
             scheduled_task_id=scheduled_task_id,
-            workflow_uuid=workflow_uuid,
             schedule_fire_id=schedule_fire_id,
             device_id=device_id,
             device_serial=device_serial,
             input_text=input_text,
+            user_message={"message": input_text, "execution": execution.model_dump()},
         )
         self._completion_events[task["id"]] = asyncio.Event()
         self._ensure_worker(device_id)
@@ -708,8 +724,8 @@ class TaskManager:
     ) -> None:
         from AutoGLM_GUI.layered_agent_service import (
             reset_session as reset_layered_session,
-            start_run,
         )
+        from AutoGLM_GUI.execution import start_run
 
         task_id = str(task["id"])
         trace_id = trace_module.create_trace_id()
@@ -733,8 +749,13 @@ class TaskManager:
                     session_id=session_id,
                     message=str(task["input_text"]),
                     device_id=str(task["device_id"]),
+                    execution=await asyncio.to_thread(
+                        self._get_execution_request, task_id
+                    ),
                 )
                 self._abort_handlers[task_id] = run.cancel
+                if task_id in self._cancel_requested:
+                    await run.cancel()
 
                 async for event in run.stream_events():
                     event_type = str(event["type"])
@@ -843,207 +864,12 @@ class TaskManager:
             start_perf=start_perf,
         )
 
-    async def _execute_scheduled_layered_workflow(self, task: TaskRecord) -> None:
+    async def _execute_scheduled_skill(self, task: TaskRecord) -> None:
         await self._execute_layered_task(
             task,
             session_id=str(task["id"]),
             clear_session_after_run=True,
             metrics_source="scheduled",
-        )
-
-    async def _execute_scheduled_workflow(self, task: TaskRecord) -> None:
-        from AutoGLM_GUI.exceptions import AgentInitializationError, DeviceBusyError
-        from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
-
-        manager = PhoneAgentManager.get_instance()
-        task_id = str(task["id"])
-        device_id = str(task["device_id"])
-        context = "scheduled"
-        trace_id = trace_module.create_trace_id()
-        start_perf = time.perf_counter()
-        acquired = False
-        final_status = TaskStatus.FAILED.value
-        final_message = ""
-        stop_reason = "error"
-        step_count = 0
-        abort_registered = False
-
-        try:
-            with trace_module.trace_context(trace_id):
-                await asyncio.to_thread(self.store.set_task_trace_id, task_id, trace_id)
-                await self._write_replay_task_start(
-                    task=task,
-                    trace_id=trace_id,
-                    source="scheduled",
-                )
-                acquired = await manager.acquire_device_async(
-                    device_id,
-                    auto_initialize=True,
-                    context=context,
-                )
-                agent = await manager.get_agent_with_context_async(
-                    device_id,
-                    context=context,
-                    agent_type=None,
-                )
-
-                async def cancel_handler() -> None:
-                    await agent.cancel()
-
-                self._abort_handlers[task_id] = cancel_handler
-                await self._register_abort_handler(
-                    manager,
-                    device_id,
-                    cancel_handler,
-                    context=context,
-                )
-                abort_registered = True
-                agent.reset()
-
-                # Early cancel: if cancel was requested before streaming started
-                if task_id in self._cancel_requested:
-                    final_message = "Task cancelled by user"
-                    final_status = TaskStatus.CANCELLED.value
-                    stop_reason = "user_stopped"
-                else:
-                    async for event in agent.stream(task["input_text"]):
-                        event_type = event["type"]
-                        event_data = dict(event.get("data", {}))
-                        if event_type == "thinking":
-                            await self._append_task_event(
-                                task_id=task_id,
-                                event_type="thinking",
-                                payload=event_data,
-                                role="assistant",
-                                trace_id=trace_id,
-                                replay_source="scheduled",
-                                task=task,
-                            )
-                        elif event_type == "step":
-                            step_count = max(
-                                step_count,
-                                int(event_data.get("step", 0)),
-                            )
-                            timings = trace_module.get_step_timing_summary(
-                                step_count,
-                                trace_id=trace_id,
-                            )
-                            if timings is not None:
-                                event_data = {**event_data, "timings": timings}
-                            await self._append_task_event(
-                                task_id=task_id,
-                                event_type="step",
-                                payload=event_data,
-                                role="assistant",
-                                trace_id=trace_id,
-                                replay_source="scheduled",
-                                task=task,
-                            )
-                        elif event_type == "done":
-                            final_message = str(
-                                event_data.get("message", "Task completed")
-                            )
-                            final_status = (
-                                TaskStatus.SUCCEEDED.value
-                                if event_data.get("success", False)
-                                else TaskStatus.FAILED.value
-                            )
-                            stop_reason = str(
-                                event_data.get(
-                                    "stop_reason",
-                                    "completed"
-                                    if event_data.get("success", False)
-                                    else "error",
-                                )
-                            )
-                            step_count = int(event_data.get("steps", step_count))
-                        elif event_type == "error":
-                            final_message = str(
-                                event_data.get("message", "Task failed")
-                            )
-                            final_status = TaskStatus.FAILED.value
-                            stop_reason = str(event_data.get("stop_reason", "error"))
-                            await self._append_task_event(
-                                task_id=task_id,
-                                event_type="error",
-                                payload={
-                                    "message": final_message,
-                                    "stop_reason": stop_reason,
-                                },
-                                role="assistant",
-                                trace_id=trace_id,
-                                replay_source="scheduled",
-                                task=task,
-                            )
-                        elif event_type == "cancelled":
-                            final_message = str(
-                                event_data.get("message", "Task cancelled by user")
-                            )
-                            final_status = TaskStatus.CANCELLED.value
-                            stop_reason = str(
-                                event_data.get("stop_reason", "user_stopped")
-                            )
-
-                if not final_message:
-                    final_message = "Task finished without a final response"
-                    final_status = TaskStatus.FAILED.value
-                    stop_reason = "error"
-
-                # If cancel was requested but the stream exited normally,
-                # override status to CANCELLED.
-                if (
-                    task_id in self._cancel_requested
-                    and final_status != TaskStatus.CANCELLED.value
-                ):
-                    final_message = "Task cancelled by user"
-                    final_status = TaskStatus.CANCELLED.value
-                    stop_reason = "user_stopped"
-        except asyncio.CancelledError:
-            if task_id in self._cancel_requested:
-                final_message = "Task cancelled by user"
-                final_status = TaskStatus.CANCELLED.value
-                stop_reason = "user_stopped"
-            else:
-                raise
-        except DeviceBusyError:
-            final_message = f"Device {device_id} is busy. Please wait."
-            final_status = TaskStatus.FAILED.value
-            stop_reason = "device_busy"
-        except AgentInitializationError as exc:
-            final_message = (
-                f"初始化失败: {exc}. 请检查全局配置 (base_url, api_key, model_name)"
-            )
-            final_status = TaskStatus.FAILED.value
-            stop_reason = "initialization_failed"
-        except Exception as exc:
-            final_message = str(exc)
-            final_status = TaskStatus.FAILED.value
-            stop_reason = "error"
-        finally:
-            self._cancel_requested.discard(task_id)
-            self._abort_handlers.pop(task_id, None)
-            if abort_registered:
-                await self._unregister_abort_handler(
-                    manager,
-                    device_id,
-                    context=context,
-                )
-            if final_status == TaskStatus.FAILED.value:
-                await manager.set_error_state_async(
-                    device_id, final_message, context=context
-                )
-            if acquired:
-                await manager.release_device_async(device_id, context=context)
-
-        await self._finalize_traced_task(
-            task_id=task_id,
-            trace_id=trace_id,
-            status=final_status,
-            final_message=final_message,
-            stop_reason=stop_reason,
-            step_count=step_count,
-            metrics_source="scheduled",
-            start_perf=start_perf,
         )
 
     async def _finalize_task(

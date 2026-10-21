@@ -12,6 +12,7 @@ from typing import Any
 
 from AutoGLM_GUI.actions import ActionResult
 from AutoGLM_GUI.agents.base import AsyncAgentBase
+from AutoGLM_GUI.execution_metrics import record_model_call, record_usage
 from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.model import MessageBuilder
 from AutoGLM_GUI.model.error_details import (
@@ -404,6 +405,7 @@ class AsyncGeminiAgent(AsyncAgentBase):
         if self._cancel_event.is_set():
             raise asyncio.CancelledError()
 
+        call_id = record_model_call("executor")
         response = await self.openai_client.chat.completions.create(
             messages=self._context,  # type: ignore[arg-type]
             model=self.model_config.model_name,
@@ -419,6 +421,7 @@ class AsyncGeminiAgent(AsyncAgentBase):
             ),
         )
 
+        record_usage("executor", getattr(response, "usage", None), call_id=call_id)
         choice = response.choices[0]
         message = choice.message
 

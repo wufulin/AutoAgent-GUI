@@ -5,6 +5,8 @@ import binascii
 import re
 from typing import Any
 
+from AutoGLM_GUI.execution_models import ExecutionRequest
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from AutoGLM_GUI.device_metadata_manager import DISPLAY_NAME_MAX_LENGTH
@@ -580,56 +582,6 @@ class QRPairCancelResponse(BaseModel):
     message: str
 
 
-# Workflow Models
-
-
-class WorkflowBase(BaseModel):
-    """Workflow 基础模型."""
-
-    name: str
-    text: str
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, v: str) -> str:
-        """验证 name 非空."""
-        if not v or not v.strip():
-            raise ValueError("name cannot be empty")
-        return v.strip()
-
-    @field_validator("text")
-    @classmethod
-    def validate_text(cls, v: str) -> str:
-        """验证 text 非空."""
-        if not v or not v.strip():
-            raise ValueError("text cannot be empty")
-        return v.strip()
-
-
-class WorkflowCreate(WorkflowBase):
-    """创建 Workflow 请求."""
-
-    pass
-
-
-class WorkflowUpdate(WorkflowBase):
-    """更新 Workflow 请求."""
-
-    pass
-
-
-class WorkflowResponse(WorkflowBase):
-    """Workflow 响应."""
-
-    uuid: str
-
-
-class WorkflowListResponse(BaseModel):
-    """Workflow 列表响应."""
-
-    workflows: list[WorkflowResponse]
-
-
 class RemoteDeviceInfo(BaseModel):
     """远程设备信息."""
 
@@ -780,6 +732,7 @@ class TraceSummaryResponse(BaseModel):
 
 
 class HistoryRecordResponse(BaseModel):
+    execution_summary: dict[str, Any] | None = None
     """历史记录条目响应."""
 
     id: str
@@ -896,6 +849,7 @@ class TaskImageAttachment(BaseModel):
 
 
 class TaskSubmitRequest(BaseModel):
+    execution: ExecutionRequest | None = None
     message: str = ""
     attachments: list[TaskImageAttachment] = Field(default_factory=list)
 
@@ -984,130 +938,76 @@ class TaskSessionResetResponse(BaseModel):
 
 
 class ScheduledTaskCreate(BaseModel):
-    """创建定时任务请求."""
+    """创建固定技能版本的定时任务。"""
 
-    name: str
-    workflow_uuid: str
-    device_serialnos: list[str] | None = None  # 直接指定设备列表
-    device_group_id: str | None = None  # 或指定设备分组
+    model_config = {"extra": "forbid"}
+    name: str = Field(min_length=1, max_length=120)
+    skill_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    skill_version: int = Field(ge=1, strict=True)
+    parameters: dict[str, Any] = Field(default_factory=dict, max_length=20)
+    device_serialnos: list[str] | None = None
+    device_group_id: str | None = None
     cron_expression: str
     enabled: bool = True
-    execution_mode: str = "classic"
 
     @field_validator("name")
     @classmethod
-    def validate_name(cls, v: str) -> str:
-        if not v or not v.strip():
+    def validate_name(cls, value: str) -> str:
+        if not value.strip():
             raise ValueError("name cannot be empty")
-        return v.strip()
+        return value.strip()
 
     @field_validator("device_serialnos")
     @classmethod
-    def validate_devices(cls, v: list[str] | None) -> list[str] | None:
-        if v is None:
-            return None
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for raw in v or []:
-            s = raw.strip()
-            if not s or s in seen:
-                continue
-            normalized.append(s)
-            seen.add(s)
-        return normalized if normalized else None
+    def validate_devices(cls, value: list[str] | None) -> list[str] | None:
+        return (
+            list(dict.fromkeys(item.strip() for item in value if item.strip()))
+            if value
+            else None
+        )
 
     @field_validator("cron_expression")
     @classmethod
-    def validate_cron(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("cron_expression cannot be empty")
-        parts = v.strip().split()
-        if len(parts) != 5:
-            raise ValueError(
-                "cron_expression must have 5 fields (minute hour day month weekday)"
-            )
-        return v.strip()
+    def validate_cron(cls, value: str) -> str:
+        from apscheduler.triggers.cron import CronTrigger
 
-    @field_validator("execution_mode")
-    @classmethod
-    def validate_execution_mode(cls, v: str) -> str:
-        mode = v.strip()
-        if mode not in {"classic", "layered"}:
-            raise ValueError("execution_mode must be one of: classic, layered")
-        return mode
+        CronTrigger.from_crontab(value.strip())
+        return value.strip()
 
-    def model_post_init(self, __context: Any) -> None:
-        """验证必须指定 device_serialnos 或 device_group_id 之一."""
-        if not self.device_serialnos and not self.device_group_id:
+    @model_validator(mode="after")
+    def validate_target(self) -> "ScheduledTaskCreate":
+        if bool(self.device_serialnos) == bool(self.device_group_id):
             raise ValueError(
-                "either device_serialnos or device_group_id must be specified"
+                "Specify exactly one of device_serialnos or device_group_id"
             )
+        return self
 
 
 class ScheduledTaskUpdate(BaseModel):
-    """更新定时任务请求."""
+    """更新任务后重新验证完整定义和技能参数。"""
 
+    model_config = {"extra": "forbid"}
     name: str | None = None
-    workflow_uuid: str | None = None
+    skill_id: str | None = None
+    skill_version: int | None = Field(default=None, ge=1, strict=True)
+    parameters: dict[str, Any] | None = None
     device_serialnos: list[str] | None = None
     device_group_id: str | None = None
     cron_expression: str | None = None
     enabled: bool | None = None
-    execution_mode: str | None = None
-
-    @field_validator("device_serialnos")
-    @classmethod
-    def validate_devices(cls, v: list[str] | None) -> list[str] | None:
-        if v is None:
-            return None
-
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for raw in v:
-            s = raw.strip()
-            if not s or s in seen:
-                continue
-            normalized.append(s)
-            seen.add(s)
-
-        return normalized if normalized else None
-
-    @field_validator("cron_expression")
-    @classmethod
-    def validate_cron(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        if not v.strip():
-            raise ValueError("cron_expression cannot be empty")
-        parts = v.strip().split()
-        if len(parts) != 5:
-            raise ValueError(
-                "cron_expression must have 5 fields (minute hour day month weekday)"
-            )
-        return v.strip()
-
-    @field_validator("execution_mode")
-    @classmethod
-    def validate_execution_mode(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        mode = v.strip()
-        if mode not in {"classic", "layered"}:
-            raise ValueError("execution_mode must be one of: classic, layered")
-        return mode
 
 
 class ScheduledTaskResponse(BaseModel):
-    """定时任务响应."""
-
     id: str
     name: str
-    workflow_uuid: str
+    skill_id: str
+    skill_version: int
+    parameters: dict[str, Any]
+    invalid_reason: str | None = None
     device_serialnos: list[str]
     device_group_id: str | None = None
     cron_expression: str
     enabled: bool
-    execution_mode: str = "classic"
     created_at: str
     updated_at: str
     last_run_time: str | None
@@ -1120,8 +1020,6 @@ class ScheduledTaskResponse(BaseModel):
 
 
 class ScheduledTaskListResponse(BaseModel):
-    """定时任务列表响应."""
-
     tasks: list[ScheduledTaskResponse]
 
 

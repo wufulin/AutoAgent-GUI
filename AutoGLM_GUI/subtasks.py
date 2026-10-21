@@ -19,6 +19,7 @@ from AutoGLM_GUI.agents.protocols import AsyncAgent
 from AutoGLM_GUI.config import ModelConfig
 from AutoGLM_GUI.config_manager import config_manager
 from AutoGLM_GUI.exceptions import DeviceBusyError
+from AutoGLM_GUI.execution_metrics import record_model_call, record_usage
 from AutoGLM_GUI.model.message_builder import MessageBuilder
 from AutoGLM_GUI.phone_agent_trace import (
     PhoneAgentReplay,
@@ -369,12 +370,18 @@ async def verify_completion(
                                 timeout=VERIFICATION_REQUEST_TIMEOUT_SECONDS,
                                 max_retries=0,
                             ) as client:
+                                call_id = record_model_call("verifier")
                                 response = await client.chat.completions.create(
                                     model=model_config.model_name,
                                     messages=cast(Any, messages),
                                     temperature=model_config.temperature,
                                     max_tokens=VERIFICATION_MAX_TOKENS,
                                     extra_body=extra_body or None,
+                                )
+                                record_usage(
+                                    "verifier",
+                                    getattr(response, "usage", None),
+                                    call_id=call_id,
                                 )
                         except asyncio.CancelledError:
                             # Cancellation messages, like provider errors, may be private.
@@ -484,6 +491,10 @@ class SubtaskRunContext:
     agents: dict[str, AsyncAgent] = field(default_factory=dict)
     progress: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
     total_steps: int = 0
+    continuations: int = 0
+    task_constraints: list[str] = field(default_factory=list)
+    planner_call_ids: list[str | None] = field(default_factory=list)
+    deadline_reason: str | None = None
     cancelled: bool = False
     closed: bool = False
     fatal_result: SubtaskResult | None = None
@@ -533,6 +544,8 @@ class SubtaskRunContext:
     def final_result(self) -> tuple[bool, str, str]:
         if self.fatal_result and self.fatal_result.status == "unknown":
             return False, "unknown", self.fatal_result.stop_reason
+        if self.deadline_reason:
+            return False, "blocked", self.deadline_reason
         if self.cancelled:
             return False, "cancelled", "user_stopped"
         if self.fatal_result:
@@ -544,6 +557,86 @@ class SubtaskRunContext:
                 return False, result.status, result.stop_reason
         return True, "completed", "goal_verified"
 
+    def stop(self, goal: str, reason: str, message: str) -> SubtaskResult:
+        """Latch a runtime failure without discarding earlier or unknown evidence."""
+        return self._record(
+            SubtaskResult(
+                subtask_id=uuid4().hex,
+                goal=goal,
+                status="blocked",
+                stop_reason=reason,
+                message=message,
+            )
+        )
+
+    async def observe(
+        self, device_id: str, goal: str, criteria: list[str]
+    ) -> Verification:
+        """Read fresh evidence under the same lease, without running action tools."""
+        from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
+
+        if (
+            self.closed
+            or self.cancelled
+            or self.fatal_result
+            or (self.device_id is not None and device_id != self.device_id)
+            or self.fingerprint() != self.config_fingerprint
+            or not criteria
+            or self._lock.locked()
+        ):
+            raise ValueError("Observation context is not active")
+        async with self._lock:
+            current = asyncio.current_task()
+            if current:
+                self._active.add(current)
+            try:
+                manager = PhoneAgentManager.get_instance()
+                if device_id not in self._leased:
+                    await manager.acquire_device_lease(device_id, self.owner)
+                    self._leased.add(device_id)
+                await manager.validate_device_lease(device_id, self.owner)
+                agent = self.agents.get(device_id)
+                if agent is None:
+                    agent = await manager.get_agent_with_context_async(
+                        device_id, context=self.owner, agent_type=None
+                    )
+                    self.agents[device_id] = agent
+                device = getattr(agent, "device", None)
+                if device is None or getattr(device, "outcome_unknown", False):
+                    self._mark_unknown(device_id)
+                    await manager.quarantine_device(device_id, "device_outcome_unknown")
+                    raise ValueError("Device outcome is unknown")
+                return await verify_completion(
+                    device, agent.model_config, goal, criteria
+                )
+            finally:
+                if current:
+                    self._active.discard(current)
+
+    async def check(
+        self, device_id: str, goal: str, criteria: list[str], *, phase: str
+    ) -> SubtaskResult:
+        """Record a read-only precondition or final acceptance check."""
+        verification = await self.observe(device_id, goal, criteria)
+        met = (
+            not verification.error
+            and [item.criterion for item in verification.criteria] == criteria
+            and all(item.verdict == "met" for item in verification.criteria)
+        )
+        result = SubtaskResult(
+            subtask_id=uuid4().hex,
+            goal=goal,
+            status="completed" if met else "blocked",
+            message="截图验收通过。"
+            if met
+            else "当前截图未能证明全部完成条件，已停止。",
+            stop_reason="goal_verified" if met else f"{phase}_not_verified",
+            success_criteria=criteria,
+            verification=verification,
+        )
+        self._progress(result, phase)
+        return self._record(result)
+
     async def execute(
         self,
         device_id: str,
@@ -553,6 +646,7 @@ class SubtaskRunContext:
         max_steps: int = 10,
         checkpoint: str | None = None,
     ) -> SubtaskResult:
+        constraints = [*self.task_constraints, *constraints]
         failure = SubtaskResult(
             subtask_id=uuid4().hex,
             goal=goal,
@@ -690,6 +784,7 @@ class SubtaskRunContext:
             # Revalidate the same owner and quarantine state without acquiring
             # a second lease or resetting the executor.
             await manager.validate_device_lease(device_id, self.owner)
+            self.continuations += 1
         result = state.result.model_copy(deep=True)
         result.checkpoint = None
         result.verification = None

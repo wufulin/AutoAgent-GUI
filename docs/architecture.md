@@ -65,7 +65,7 @@ HTTP Remote 并存。`DeviceManager` 只在登录、手机配置、HID 和首张
 
 ## 统一聊天入口与兼容边界
 
-聊天页 `/chat` 默认使用分层代理：决策模型通过 `execute_subtask` 提交目标、完成条件、约束及步数预算，由 `subtasks.py` 管理 task 内的有状态执行和完成验收。Planner 会话仍由 SQLiteSession 管理，手机执行器按 task 隔离。直接执行继续使用 `TaskManager._execute_classic_chat`，保留图片输入及原有接管后继续路径。
+聊天页 `/chat` 默认使用任务路由入口 `execution.py`，在现有 `layered` 会话中选择技能、直接视觉执行或 Planner。三条路径共用 `subtasks.py` 的任务租约、结构化结果与新截图验收。Planner 会话仍由 SQLiteSession 管理，手机执行器按 task 隔离。高级设置中的经典模式仍由 `TaskManager._execute_classic_chat` 执行，保留图片输入及原有接管路径；它与第二版的已验证直接执行不同。
 
 分层执行在视觉适配器自身的系统提示词后追加目标确认、坐标单位、误点即停止
 和禁止盲目重放等约束。Gemini 保留 function calling 协议，GLM/Qwen 保留各自
@@ -75,16 +75,15 @@ HTTP Remote 并存。`DeviceManager` 只在登录、手机配置、HID 和首张
 finish 报告或后续 Planner 文字改判成功。
 
 独立的 MCP `chat` 保留每次 5 步、重置及恢复原配置的兼容行为，也追加保留原协议的
-约束；它没有分层 `execute_subtask` 的 checkpoint 或独立完成验收。分层 Planner 的
-同名兼容工具则委托 `execute_subtask`，采用已验证子任务的契约。
+约束；它没有分层 `execute_subtask` 的 checkpoint 或独立完成验收。Planner 只暴露 `list_devices / list_skills / execute_skill / execute_subtask`；独立 MCP 接口不参与技能路由。
 
 顶部不再提供双模式切换。设备栏「设置 → 高级设置 → 聊天执行方式」保留「自动规划（默认）」和「直接执行」，保存后应用，取消或关闭放弃未保存的选择。选择仅记录在当前聊天 URL；刷新沿用，新的无模式链接仍默认自动规划。路由以 URL 为模式来源，继续识别旧 `mode=classic` 和 `mode=chatkit`，不迁移或删除旧会话及历史。
 
-自动规划需要视觉模型和决策模型。已加载配置但缺少决策模型地址或名称时，聊天区先提示配置，并可打开高级设置选择直接执行，不提供任务提交输入。API Key 是否必需仍由所用服务决定。直接执行只需要原有执行模型配置。
+Planner 路径需要视觉模型和决策模型；技能与已验证直接执行只需要视觉模型。缺少决策模型时仍展示技能和直接执行入口，直接执行必须填写明确完成条件。API Key 是否必需由所用服务决定。
 
 视觉模型与决策模型页签均提供 `DeepSeek V4.1 Flash` 预设，填入官方 OpenAI 兼容地址 `https://api.deepseek.com` 与模型 ID `deepseek-flash`。视觉预设同时选择 `General Vision Agent`（`agent_type=gemini`）并清空其他 Agent 的专用参数，复用现有图片输入与 function calling 路径；切回智谱或 ModelScope 的 AutoGLM 视觉预设时恢复 `glm-async` 及其默认参数，避免沿用不匹配的工具调用协议。决策预设只修改决策地址和模型名称。两个 API Key 输入框由用户分别配置，预设不提供密钥。选择后仍需保存，取消或关闭会恢复原配置，不改变未选择预设的现有配置与默认值。官方接口与图片输入说明见 [API 文档](https://api-docs.deepseek.com/) 和 [Vision 指南](https://api-docs.deepseek.com/guides/vision/)。`deepseek-flash` 的视觉与规划请求均显式关闭 DeepSeek 思考模式：视觉端保持强制工具调用（思考模式不支持 `tool_choice=required`），规划端避免现有 Chat Completions 会话丢失 `reasoning_content` 导致多轮工具调用失败。其他模型沿用原有行为。本次不增加公共 API 或数据库迁移；回滚前端即可移除预设，已保存配置仍可作为自定义服务使用。真实 DeepSeek 调用与真机执行需在用户配置密钥后另行验证。
 
-后端会话 API、MCP 的 `mode` 缺省值及定时任务 `execution_mode` 保持原有兼容语义，不因聊天 UI 选择发生迁移。两种执行方式继续按原来的独立会话键恢复。配置服务请求失败时保留现有配置对话框处理方式，不自动切换执行方式。
+后端会话与 MCP 的 `mode` 仍使用既有 classic/layered 值；任务内的 `execution.route` 独立选择路径。定时任务已改为绑定技能 ID、版本、参数，不再使用 workflow 或 execution_mode。配置服务请求失败不会自动切换执行方式。
 
 聊天入口的布局调整不改变手机控制协议。浏览器回归验证默认分层会话、保存/取消、刷新恢复、旧链接、缺少决策模型的提示与直接执行入口；原有直接执行任务、图片输入及接管恢复测试继续运行。回滚前端版本可恢复顶部切换，不需数据库迁移。上述测试不代表两个模式的真机成功率或性能对比。
 
@@ -94,8 +93,8 @@ finish 报告或后续 Planner 文字改判成功。
 General Vision（`gemini`，兼容 `general-vision`）。MAI、DroidRun、Midscene 的代码、专用参数 UI、依赖和打包入口移除。旧配置仍按原类型读取，`GET /api/config` 返回新增的 `agent_type_supported=false`，不会回退默认执行器；保存和初始化拒绝旧类型。用户改选受支持类型后清空旧 `agent_config_params`，历史中的旧类型标签与字符串结果仍能读取。配置保存和删除先在 manager 建立原子更新边界：已有任务、租约或人工操作时返回 409 且不写盘；更新期间拒绝新的设备获取。保存、环境同步及空闲执行器销毁完成后解除更新边界；删除保留原有语义，不额外同步环境或重建执行器。
 
 `execute_subtask(device_id, goal, success_criteria, constraints, max_steps=10, checkpoint=None)`
-按可验证的界面状态划分子目标，每段预算为 1–20 步，整个 task 的累计步数沿用
-`default_max_steps`，Planner 轮数沿用 `layered_max_turns`。返回七种状态：
+按可验证的界面状态划分子目标，每段预算为 1–20 步，整个 task 的累计步数受请求预算和
+`default_max_steps` 的较小值约束，Planner 轮数仍受 `layered_max_turns` 约束。返回七种状态：
 `completed / partial / blocked / failed / cancelled / needs_user / unknown`。
 兼容包保留 `result / steps / success`，result 增加目标、状态、停止原因、累计步数、验收摘要与续跑句柄；success 仅 completed 为真。进度事件区分 executing 与 verifying。
 
@@ -119,7 +118,7 @@ token 用量、响应长度与 SHA-256、请求 ID 的 SHA-256、异常类型、
 
 partial 仅用于本段预算耗尽或验收明确未满足，附当前 task 内的一次性 checkpoint。
 续跑校验目标、条件、约束及设备一致，保留执行器上下文并注入验收差异；旧句柄消费后失效。
-未完成子任务须先续跑，不能跳过后新建子任务。checkpoint 不跨用户轮次、task 或进程恢复；取消、结束、模型配置变化后不可复用。整体成功要求至少一个子任务，且所有已发起子任务的最新状态均 completed；其他终止状态不能被 Planner 最终文字覆盖。这是子目标聚合验收，不保证 Planner 没有遗漏原始目标。
+未完成子任务须先续跑，不能跳过后新建子任务。checkpoint 不跨用户轮次、task 或进程恢复；取消、结束、模型配置变化后不可复用。整体成功要求至少一个子任务，且所有已发起子任务的最新状态均 completed；其他终止状态不能被 Planner 最终文字覆盖。第二版任务入口在 Planner 正常结束后，额外对用户原始目标或明确传入的最终条件进行只读验收；未能从当前截图证明的要求保持未验证，不能由 Planner 自述补足。
 
 当前 task 的 SDK run context 另保留按设备隔离、有界的近期执行摘要，用于后续子目标
 了解已有操作。摘要包含目标、结果与动作几何，不复制图片、完整模型推理或输入文本
@@ -196,3 +195,46 @@ H.264 播放器通过 `connect-device.videoWindow=4` 协商最多 4 个未完成
 前后端应成套更新，旧后端缺少 session 元数据时新前端提示升级。回滚时先停止手动与 AI 操作、关闭预览、确认手机没有持续触摸，再整体回滚前后端。不得把超时后的原手势作为新动作重放。单进程后端是当前所有权和会话状态的运行前提；多进程/多主机部署需增加统一设备仲裁。
 
 真机验收使用可控测试页面，检查连续拖动、长按、拖出窗口、失焦、旋转、断线恢复和 AI 冲突，并独立测量输入到画面响应的 P50/P95；代码测试与静态检查不能替代该验收。
+
+
+## 第二版：技能、任务路由与评测
+
+技能是版本化执行计划：参数 schema、只读前置条件、有序步骤、每步完成条件、作用类型、续跑次数、最终条件和总预算。定义存储在 `~/.config/autoglm/skills.json`，不执行 Python、shell 或坐标录制脚本。参数以 JSON 字面值替换 `{{parameter}}`，并附加“参数是数据”的固定约束；这不是对视觉模型语义遵循的形式证明。[V2E1]
+
+```mermaid
+flowchart TD
+    U[聊天或定时任务] --> R[ExecutionRequest 与确定性路由]
+    R --> S[版本固定的技能状态机]
+    R --> D[直接视觉子任务]
+    R --> P[Planner]
+    P --> S
+    P --> D
+    S --> K[SubtaskRunContext]
+    D --> K
+    K --> V[新截图验收与设备租约]
+    V --> E[任务事件与执行统计]
+```
+
+自动路由只对完整的“打开微信”指令匹配内置技能，其他输入进入 Planner；明确选择技能时要求 ID、版本和通过校验的参数，直接模式要求非空完成条件。Planner 可发现技能并执行固定版本。技能前置条件只读检查，步骤完成才推进游标，所有步骤完成后重新检查技能整体条件。计划不能在运行中改成新版本；更新保留历史版本，禁用使旧版本也不能新开任务；删除保留 ID 墓碑，防止同 ID/v1 重建后悄悄改变已有定时任务。[V2E1][V2E2]
+
+默认总预算为 60 步/300 秒，取请求、配置及技能预算的较小限制。每步最多 20 步，最多 3 次续跑；导航/读取步骤只有 `partial` 且有效 checkpoint 才可自动续跑。首次允许一个有界续跑段，后续必须有更多完成条件被证实；截图发生变化不算进展。`write` 步骤默认且强制不自动续跑。终止失败、歧义、接管、未知设备结果直接停止；超时取消执行并结算在途效果，无法确认仍为 unknown。[V2E2]
+
+`TaskStore.create_task_run` 在同一 SQLite 事务内保存任务和包含 execution 的 user_message，再让队列看见任务；事务失败回滚，不允许执行参数尚未落盘的技能。`execution_route / skill_progress / execution_continuation / execution_summary` 沿现有任务事件落库，摘要同时进入历史详情。模型请求在实际调用点统计，提供方缺失 usage 时保留 null；步骤数不充当模型调用数。评测工具比较相同 case/repetition 的数据，真实完成率与误报率需要独立人工标签，合成 fixture 不产生真实节省结论。[V2E3][V2E4]
+
+当前实现使用截图与视觉验收，不包含 UI tree/OCR 混合感知、任意分支图、自动生成并发布技能、跨任务 checkpoint 恢复或通用弹窗自动处理。内置微信导航技能是可编辑副本的起点，仍需在目标设备和应用版本上做业务验收。没有真机数据时不能宣称调用量、耗时或成功率已改善。
+
+### 升级与回滚
+
+前后端一起更新。`/api/workflows`、旧工作流页面与纯文本执行实现已移除；`workflows.json` 保留但不读取。旧定时任务保留可见记录并标为失效/禁用，须重新选择技能和参数才能执行；首次改写定时文件前保留 `scheduled_tasks.legacy.json`。旧 SQLite 历史列保留为数据档案，不再参与调度。技能 API 支持带 expected_version 的编辑/删除，冲突返回 409，损坏的目录返回 503，不覆盖坏文件。[V2E1][V2E5]
+
+回滚前停止任务、确认设备空闲，整体回滚前后端。技能配置保留供以后恢复，旧版不识别；只有用户确认后才用 legacy 备份恢复旧定时配置，避免回滚后意外重新启用原任务。生产配置与真机状态不由代码测试自动迁移。
+
+使用说明见[技能库](docs/guide/use-skills.md)，评测导出与运行命令见[执行评测](docs/explanation/execution-evaluation.md)。
+
+| ID | Locator | Observation | Confidence |
+| --- | --- | --- | --- |
+| V2E1 | `AutoGLM_GUI/skills.py#SkillManager` | 参数编译、版本存储、原子写入与删除墓碑 | High |
+| V2E2 | `AutoGLM_GUI/execution.py#execute_skill` | 路由、按步骤验收、续跑预算与任务终态 | High |
+| V2E3 | `AutoGLM_GUI/task_store.py#create_task_run` | 任务及请求在同一事务内可见，失败回滚 | High |
+| V2E4 | `AutoGLM_GUI/evaluation.py` | 人工标签、匹配比较与未知成本语义 | High |
+| V2E5 | `AutoGLM_GUI/scheduler_manager.py` | 技能调度和旧定时任务禁用 | High |

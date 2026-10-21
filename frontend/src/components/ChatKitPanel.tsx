@@ -16,17 +16,22 @@ import {
   ChevronDown,
   ChevronUp,
   History,
-  ListChecks,
   Loader2,
   Square,
   Hand,
 } from 'lucide-react';
-import type { Workflow, HistoryRecordResponse } from '../api';
+import type {
+  SkillDefinition,
+  TaskExecution,
+  ExecutionSummary,
+  ExecutionRoute,
+  HistoryRecordResponse,
+} from '../api';
 import {
   cancelTaskRun,
   createTaskSession,
   getTaskSession,
-  listWorkflows,
+  listSkills,
   getErrorMessage,
   getTask,
   listHistory,
@@ -46,11 +51,9 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
+import { ExecutionOptions } from './ExecutionOptions';
+import { ExecutionSummaryCard } from './ExecutionSummaryCard';
+import { textLines, validSkillParameters } from '../lib/skills';
 import { HistoryItemCard } from './HistoryItemCard';
 import { MarkdownContent } from './MarkdownContent';
 import { ResultStatusBadge } from './ResultStatusBadge';
@@ -65,6 +68,7 @@ interface ChatKitPanelProps {
   deviceConnectionType?: string;
   isVisible: boolean;
   unlimitedStepsEnabled?: boolean;
+  plannerConfigured?: boolean;
 }
 
 // 执行步骤类型
@@ -96,6 +100,8 @@ interface Message {
   isStreaming?: boolean;
   success?: boolean;
   resultStatus?: SubtaskStatus;
+  executionRoute?: ExecutionRoute;
+  executionSummary?: ExecutionSummary;
 }
 
 function isTaskActive(status: TaskStatus): boolean {
@@ -322,6 +328,14 @@ function buildAssistantMessage(
     content,
     timestamp: new Date(task.finished_at || task.started_at || task.created_at),
     steps,
+    executionRoute: [...events]
+      .reverse()
+      .find(event => event.event_type === 'execution_route')
+      ?.payload as unknown as ExecutionRoute | undefined,
+    executionSummary: [...events]
+      .reverse()
+      .find(event => event.event_type === 'execution_summary')
+      ?.payload as unknown as ExecutionSummary | undefined,
     isStreaming: isTaskActive(task.status),
     resultStatus,
     success:
@@ -356,7 +370,7 @@ export function ChatKitPanel({
   deviceName,
   deviceConnectionType,
   isVisible,
-  unlimitedStepsEnabled = false,
+  plannerConfigured = true,
 }: ChatKitPanelProps) {
   const t = useTranslation();
 
@@ -387,9 +401,15 @@ export function ChatKitPanel({
     [deviceId]
   );
 
-  // Workflow state
-  const [workflows, setWorkflows] = React.useState<Workflow[]>([]);
-  const [showWorkflowPopover, setShowWorkflowPopover] = React.useState(false);
+  const [skills, setSkills] = React.useState<SkillDefinition[]>([]);
+  const [execution, setExecution] = React.useState<TaskExecution>({
+    route: plannerConfigured ? 'auto' : 'direct',
+    parameters: {},
+    success_criteria: [],
+    constraints: [],
+    max_steps: 60,
+    max_seconds: 300,
+  });
 
   // History state
   const [historyItems, setHistoryItems] = React.useState<
@@ -435,17 +455,10 @@ export function ChatKitPanel({
     };
   }, []);
 
-  // Load workflows
   React.useEffect(() => {
-    const loadWorkflows = async () => {
-      try {
-        const data = await listWorkflows();
-        setWorkflows(data.workflows);
-      } catch (error) {
-        console.error('Failed to load workflows:', error);
-      }
-    };
-    loadWorkflows();
+    listSkills()
+      .then(data => setSkills(data.skills))
+      .catch(err => setError(getErrorMessage(err)));
   }, []);
 
   // Load history items when popover opens
@@ -464,11 +477,6 @@ export function ChatKitPanel({
     }
   }, [showHistoryPopover, deviceSerial]);
 
-  const handleExecuteWorkflow = (workflow: Workflow) => {
-    setInput(workflow.text);
-    setShowWorkflowPopover(false);
-  };
-
   const handleSelectHistory = async (record: HistoryRecordResponse) => {
     const userMessage: Message = {
       id: `${record.id}-user`,
@@ -486,6 +494,7 @@ export function ChatKitPanel({
       steps: [],
       success: record.success,
       resultStatus: record.result_status ?? undefined,
+      executionSummary: record.execution_summary ?? undefined,
       isStreaming: false,
     };
 
@@ -723,9 +732,26 @@ export function ChatKitPanel({
 
   const handleSend = React.useCallback(async () => {
     const inputValue = input.trim();
-    const messageValue = inputValue;
+    const selectedSkill = skills.find(
+      skill =>
+        skill.id === execution.skill_id &&
+        skill.version === execution.skill_version &&
+        skill.enabled
+    );
+    const messageValue =
+      execution.route === 'skill' ? selectedSkill?.name || '' : inputValue;
     if (!messageValue || loading || !sessionId) return;
 
+    if (
+      (execution.route === 'direct' &&
+        !textLines(execution.success_criteria.join('\n')).length) ||
+      (execution.route === 'skill' &&
+        (!selectedSkill ||
+          !validSkillParameters(selectedSkill, execution.parameters)))
+    ) {
+      setError(t.skills.parametersRequired);
+      return;
+    }
     setInput('');
     setLoading(true);
     setError(null);
@@ -737,7 +763,14 @@ export function ChatKitPanel({
     }
 
     try {
-      const task = await submitTaskSessionTask(sessionId, messageValue);
+      const task = await submitTaskSessionTask(sessionId, messageValue, [], {
+        ...execution,
+        success_criteria: textLines(execution.success_criteria.join('\n')),
+        constraints:
+          execution.route === 'skill'
+            ? [...execution.constraints, ...textLines(inputValue)]
+            : execution.constraints,
+      });
       const initialEvents = (await listTaskEvents(task.id)).events;
       const reconciledTask = reconcileTaskRun(task, initialEvents);
       taskRunsRef.current[task.id] = reconciledTask;
@@ -768,6 +801,9 @@ export function ChatKitPanel({
     replaceTaskMessages,
     sessionId,
     waitingForUserInteraction,
+    execution,
+    skills,
+    t.skills.parametersRequired,
   ]);
 
   const handleAbort = React.useCallback(() => {
@@ -856,7 +892,7 @@ export function ChatKitPanel({
                 {t.chatkit?.title || 'AI Agent'}
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                {deviceName} • {t.chatkit?.layeredAgent || '分层代理模式'}
+                {deviceName} • {t.skills.taskExecution}
               </p>
             </div>
           </div>
@@ -865,16 +901,8 @@ export function ChatKitPanel({
               variant="secondary"
               className="bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
             >
-              {t.chatkit?.layeredAgent || '分层代理模式'}
+              {t.skills[execution.route]}
             </Badge>
-            {loading && unlimitedStepsEnabled && (
-              <Badge
-                variant="secondary"
-                className="bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-              >
-                无限步数模式
-              </Badge>
-            )}
             {/* History button with Popover */}
             <Popover
               open={showHistoryPopover}
@@ -986,8 +1014,7 @@ export function ChatKitPanel({
                     {t.chatkit?.title || '分层代理模式'}
                   </p>
                   <p className="mt-1 text-sm text-slate-500 dark:text-slate-400 max-w-xs">
-                    {t.chatkit?.layeredAgentDesc ||
-                      '决策模型负责规划任务，视觉模型负责执行。你可以看到每一步的执行过程。'}
+                    {t.skills.executionIntro}
                   </p>
                 </div>
               ) : (
@@ -1009,6 +1036,10 @@ export function ChatKitPanel({
                       </div>
                     ) : (
                       <div className="space-y-3">
+                        <ExecutionSummaryCard
+                          route={message.executionRoute}
+                          summary={message.executionSummary}
+                        />
                         {/* Execution Steps */}
                         {message.steps && message.steps.length > 0 && (
                           <div className="space-y-2">
@@ -1196,93 +1227,40 @@ export function ChatKitPanel({
 
         {/* Input area */}
         <div className="p-4 border-t border-slate-200 dark:border-slate-800">
+          <ExecutionOptions
+            value={execution}
+            onChange={setExecution}
+            skills={skills}
+            disabled={loading}
+            plannerConfigured={plannerConfigured}
+          />
+          {execution.route === 'skill' && (
+            <p className="mb-2 text-xs text-muted-foreground">
+              {t.skills.constraintsHint}
+            </p>
+          )}
           <div className="flex items-end gap-3">
             <Textarea
+              aria-label={
+                execution.route === 'skill'
+                  ? t.skills.additionalConstraints
+                  : undefined
+              }
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleInputKeyDown}
               placeholder={
-                waitingForUserInteraction
-                  ? t.chatkit.newTaskAfterTakeover
-                  : t.devicePanel?.whatToDo ||
-                    'What would you like to do? (Cmd+Enter to send)'
+                execution.route === 'skill'
+                  ? t.skills.additionalConstraints
+                  : waitingForUserInteraction
+                    ? t.chatkit.newTaskAfterTakeover
+                    : t.devicePanel?.whatToDo ||
+                      'What would you like to do? (Cmd+Enter to send)'
               }
               disabled={loading && !waitingForUserInteraction}
               className="flex-1 min-h-[40px] max-h-[120px] resize-none"
               rows={1}
             />
-            {/* Workflow Quick Run Button */}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Popover
-                  open={showWorkflowPopover}
-                  onOpenChange={setShowWorkflowPopover}
-                >
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      className="h-10 w-10 flex-shrink-0"
-                    >
-                      <ListChecks className="w-4 h-4" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="w-72 p-3">
-                    <div className="space-y-2">
-                      <h4 className="font-medium text-sm">
-                        {t.workflows?.selectWorkflow || 'Select Workflow'}
-                      </h4>
-                      {workflows.length === 0 ? (
-                        <div className="text-sm text-slate-500 dark:text-slate-400 space-y-1">
-                          <p>{t.workflows?.empty || 'No workflows yet'}</p>
-                          <p>
-                            前往{' '}
-                            <a
-                              href="/workflows"
-                              className="text-primary underline"
-                            >
-                              工作流
-                            </a>{' '}
-                            页面创建。
-                          </p>
-                        </div>
-                      ) : (
-                        <ScrollArea className="h-64">
-                          <div className="space-y-1">
-                            {workflows.map(workflow => (
-                              <button
-                                key={workflow.uuid}
-                                onClick={() => handleExecuteWorkflow(workflow)}
-                                className="w-full text-left p-2 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                              >
-                                <div className="font-medium text-sm">
-                                  {workflow.name}
-                                </div>
-                                <div className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2">
-                                  {workflow.text}
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        </ScrollArea>
-                      )}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={8} className="max-w-xs">
-                <div className="space-y-1">
-                  <p className="font-medium">
-                    {t.devicePanel?.tooltips?.workflowButton ||
-                      'Quick Workflow'}
-                  </p>
-                  <p className="text-xs opacity-80">
-                    {t.devicePanel?.tooltips?.workflowButtonDesc ||
-                      'Select a workflow to quickly fill in the task'}
-                  </p>
-                </div>
-              </TooltipContent>
-            </Tooltip>
             {/* Abort Button - shown when loading */}
             {loading && (
               <Button
@@ -1304,7 +1282,11 @@ export function ChatKitPanel({
             {!loading && (
               <Button
                 onClick={handleSend}
-                disabled={!input.trim()}
+                aria-label={t.skills.submit}
+                disabled={
+                  !input.trim() &&
+                  !(execution.route === 'skill' && execution.skill_id)
+                }
                 size="icon"
                 className="h-10 w-10 rounded-full flex-shrink-0 bg-purple-600 hover:bg-purple-700"
               >

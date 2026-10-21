@@ -3,6 +3,7 @@
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import ValidationError
 
 from AutoGLM_GUI.models.scheduled_task import ScheduledTask
 from AutoGLM_GUI.scheduler_manager import scheduler_manager
@@ -13,6 +14,7 @@ from AutoGLM_GUI.schemas import (
     ScheduledTaskUpdate,
 )
 from AutoGLM_GUI.task_store import task_store
+from AutoGLM_GUI.skills import SkillError, SkillStorageError
 
 router = APIRouter()
 
@@ -23,12 +25,14 @@ def _task_to_response(task: ScheduledTask) -> ScheduledTaskResponse:
     return ScheduledTaskResponse(
         id=task.id,
         name=task.name,
-        workflow_uuid=task.workflow_uuid,
+        skill_id=task.skill_id,
+        skill_version=task.skill_version,
+        parameters=task.parameters,
+        invalid_reason=task.invalid_reason,
         device_serialnos=task.device_serialnos,
         device_group_id=task.device_group_id,
         cron_expression=task.cron_expression,
         enabled=task.enabled,
-        execution_mode=task.execution_mode,
         created_at=task.created_at.isoformat(),
         updated_at=task.updated_at.isoformat(),
         last_run_time=(
@@ -75,21 +79,14 @@ def list_scheduled_tasks() -> ScheduledTaskListResponse:
 
 @router.post("/api/scheduled-tasks", response_model=ScheduledTaskResponse)
 def create_scheduled_task(request: ScheduledTaskCreate) -> ScheduledTaskResponse:
-    from AutoGLM_GUI.workflow_manager import workflow_manager
-
-    workflow = workflow_manager.get_workflow(request.workflow_uuid)
-    if not workflow:
-        raise HTTPException(status_code=400, detail="Workflow not found")
-
-    task = scheduler_manager.create_task(
-        name=request.name,
-        workflow_uuid=request.workflow_uuid,
-        device_serialnos=request.device_serialnos,
-        device_group_id=request.device_group_id,
-        cron_expression=request.cron_expression,
-        enabled=request.enabled,
-        execution_mode=request.execution_mode,
-    )
+    try:
+        task = scheduler_manager.create_task(**request.model_dump())
+    except (SkillError, ValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (SkillStorageError, OSError) as exc:
+        raise HTTPException(
+            status_code=503, detail="Schedule storage unavailable"
+        ) from exc
     return _task_to_response(task)
 
 
@@ -106,7 +103,14 @@ def update_scheduled_task(
     task_id: str, request: ScheduledTaskUpdate
 ) -> ScheduledTaskResponse:
     update_data = request.model_dump(exclude_unset=True)
-    task = scheduler_manager.update_task(task_id, **update_data)
+    try:
+        task = scheduler_manager.update_task(task_id, **update_data)
+    except (SkillError, ValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (SkillStorageError, OSError) as exc:
+        raise HTTPException(
+            status_code=503, detail="Schedule storage unavailable"
+        ) from exc
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return _task_to_response(task)
@@ -114,7 +118,12 @@ def update_scheduled_task(
 
 @router.delete("/api/scheduled-tasks/{task_id}")
 def delete_scheduled_task(task_id: str) -> dict[str, Any]:
-    success = scheduler_manager.delete_task(task_id)
+    try:
+        success = scheduler_manager.delete_task(task_id)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503, detail="Schedule storage unavailable"
+        ) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"success": True, "message": "Task deleted"}
@@ -122,7 +131,14 @@ def delete_scheduled_task(task_id: str) -> dict[str, Any]:
 
 @router.post("/api/scheduled-tasks/{task_id}/enable")
 def enable_scheduled_task(task_id: str) -> dict[str, Any]:
-    success = scheduler_manager.set_enabled(task_id, True)
+    try:
+        success = scheduler_manager.set_enabled(task_id, True)
+    except (SkillError, ValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (SkillStorageError, OSError) as exc:
+        raise HTTPException(
+            status_code=503, detail="Schedule storage unavailable"
+        ) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"success": True, "message": "Task enabled"}
@@ -130,7 +146,12 @@ def enable_scheduled_task(task_id: str) -> dict[str, Any]:
 
 @router.post("/api/scheduled-tasks/{task_id}/disable")
 def disable_scheduled_task(task_id: str) -> dict[str, Any]:
-    success = scheduler_manager.set_enabled(task_id, False)
+    try:
+        success = scheduler_manager.set_enabled(task_id, False)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503, detail="Schedule storage unavailable"
+        ) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"success": True, "message": "Task disabled"}
