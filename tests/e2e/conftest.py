@@ -5,6 +5,8 @@ import socket
 import time
 from contextlib import closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -30,12 +32,13 @@ def _run_autoglm_server(port: int, llm_url: str, trace_file: str):
     os.environ["AUTOGLM_TRACE_REPLAY_ENABLED"] = "1"
     os.environ["AUTOGLM_TRACE_CAPTURE_SCREENSHOT"] = "artifact"
     os.environ["AUTOGLM_TRACE_FILE"] = trace_file
-    os.environ["HOME"] = "/tmp"  # Override HOME to avoid loading user config
+    # Keep each test backend's config, skills, task DB and history independent
+    # from concurrent worktrees and browser tests, without changing HOME.
+    with TemporaryDirectory(prefix="autoglm-backend-e2e-") as storage_root:
+        with patch.object(Path, "home", return_value=Path(storage_root)):
+            from AutoGLM_GUI.server import app
 
-    # Import and run the server
-    from AutoGLM_GUI.server import app
-
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+            uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 
 def find_free_port(start: int = 18000, end: int = 19000) -> int:
@@ -312,8 +315,8 @@ def local_server(mock_llm_server: str, mock_agent_server: str, tmp_path: Path):
     print(f"[Local E2E] LLM URL: {llm_url}")
     print(f"[Local E2E] Trace file: {trace_file}")
 
-    # Start server in subprocess
-    proc = multiprocessing.Process(
+    # A fork could inherit app singletons constructed with the parent's paths.
+    proc = multiprocessing.get_context("spawn").Process(
         target=_run_autoglm_server,
         args=(port, llm_url, str(trace_file)),
         daemon=True,

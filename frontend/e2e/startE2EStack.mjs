@@ -22,6 +22,7 @@ const projectRoot = path.resolve(__dirname, '..', '..');
 const frontendRoot = path.resolve(__dirname, '..');
 const urlsPath = path.resolve(__dirname, '.service_urls.json');
 const pidPath = path.resolve(__dirname, '.services_pid');
+const frontendPort = process.env.AUTOGLM_E2E_PORT || '3000';
 
 const execFileAsync = promisify(execFile);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -311,7 +312,7 @@ async function main() {
     'bin',
     'vite.js'
   );
-  viteProc = spawn('node', [viteBin, '--port', '3000'], {
+  viteProc = spawn('node', [viteBin, '--port', frontendPort, '--strictPort'], {
     cwd: frontendRoot,
     stdio: 'inherit',
     env: {
