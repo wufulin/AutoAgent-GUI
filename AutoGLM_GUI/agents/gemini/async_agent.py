@@ -54,7 +54,7 @@ class AsyncGeminiAgent(AsyncAgentBase):
 
     @property
     def independent_verification(self) -> bool:
-        return self._independent_verification
+        return getattr(self, "_independent_verification", False)
 
     @independent_verification.setter
     def independent_verification(self, enabled: bool) -> None:

@@ -4,11 +4,13 @@ import asyncio
 import base64
 import copy
 import json
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from agents import RunContextWrapper
+from PIL import Image, ImageDraw
 
 from AutoGLM_GUI import subtasks
 from AutoGLM_GUI.agents.gemini.async_agent import AsyncGeminiAgent
@@ -52,8 +54,15 @@ class Device:
     def get_screenshot(self, timeout=10):
         if self.taps and self.fail_after_tap:
             raise RuntimeError("screenshot unavailable")
+        # The executor validates actual pixels and geometry before a write.
+        # Vary only the status bar so frames remain distinct without simulating
+        # an unexpected modal transition during inference.
+        image = Image.new("RGB", (self.width, self.height), "white")
+        ImageDraw.Draw(image).text((8, 8), f"frame-{len(self.frames)}", fill="black")
+        encoded = BytesIO()
+        image.save(encoded, "PNG")
         frame = Screenshot(
-            base64.b64encode(f"frame-{len(self.frames)}".encode()).decode(),
+            base64.b64encode(encoded.getvalue()).decode(),
             self.width,
             self.height,
         )

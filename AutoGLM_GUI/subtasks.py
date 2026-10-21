@@ -49,20 +49,6 @@ class VerificationReply(BaseModel):
     facts: list[str] = Field(max_length=20)
 
 
-class _CompactCriterionVerdict(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    id: str
-    verdict: Literal["met", "unmet", "unknown"]
-    reason: str
-
-
-class _WireVerificationReply(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    # A reply uses one representation throughout; mixed ID/text replies fail.
-    criteria: list[_CompactCriterionVerdict] | list[CriterionVerdict]
-    facts: list[str] = Field(max_length=20)
-
-
 VERIFICATION_MAX_TOKENS = 4096
 VERIFICATION_REQUEST_TIMEOUT_SECONDS = 120
 VERIFICATION_TIMEOUT_SECONDS = 130
@@ -339,7 +325,7 @@ def _verification_response_metadata(
 
 
 def _verification_validation_errors(error: ValidationError) -> list[dict[str, str]]:
-    known_fields = {"criteria", "criterion", "id", "verdict", "reason", "facts"}
+    known_fields = {"criteria", "criterion", "verdict", "reason", "facts"}
     issues = []
     for item in error.errors(
         include_url=False, include_context=False, include_input=False
@@ -387,18 +373,8 @@ async def verify_completion(
                         raise _VerificationFailure(
                             "verification_screenshot_unavailable"
                         ) from None
-                    condition_ids = [f"c{index + 1}" for index in range(len(criteria))]
                     prompt = json.dumps(
-                        {
-                            "goal": goal,
-                            "success_criteria": [
-                                {"id": identifier, "criterion": criterion}
-                                for identifier, criterion in zip(
-                                    condition_ids, criteria, strict=True
-                                )
-                            ],
-                        },
-                        ensure_ascii=False,
+                        {"goal": goal, "success_criteria": criteria}, ensure_ascii=False
                     )
                     instructions = (
                         "你是只读手机界面验收器。只根据当前截图检查每项完成条件；"
@@ -414,11 +390,11 @@ async def verify_completion(
                         "reason和facts必须如实描述截图证据且与verdict一致；"
                         "若证据写明其他标签选中、页面不符或输入文字不符，不得判为met。"
                         "只返回JSON，不要Markdown："
-                        '{"criteria":[{"id":"c1",'
+                        '{"criteria":[{"criterion":"原条件逐字复制",'
                         '"verdict":"met或unmet或unknown","reason":"简短截图证据"}],'
                         '"facts":["简短可观察事实"]}。'
-                        "只输出条件id，不复写条件。每项条件必须检查，"
-                        "criteria的id必须与输入一一对应、顺序一致，不得遗漏或增加。"
+                        "每个JSON对象的键只能出现一次。每项条件必须检查，"
+                        "criteria必须逐字复制输入条件、一一对应、顺序一致，不得遗漏或增加。"
                     )
                     messages = [
                         MessageBuilder.create_system_message(instructions),
@@ -487,9 +463,7 @@ async def verify_completion(
                             "verification_json_invalid"
                         ) from None
                     try:
-                        reply = _WireVerificationReply.model_validate(
-                            payload, strict=True
-                        )
+                        reply = VerificationReply.model_validate(payload, strict=True)
                     except ValidationError as exc:
                         diagnostics.error_type = type(exc).__name__
                         diagnostics.validation_errors = _verification_validation_errors(
@@ -505,37 +479,18 @@ async def verify_completion(
                         )
                         raise _VerificationFailure(code) from None
                     diagnostics.stage = "criteria"
-                    compact = not reply.criteria or isinstance(
-                        reply.criteria[0], _CompactCriterionVerdict
-                    )
-                    actual = [
-                        item.id
-                        if isinstance(item, _CompactCriterionVerdict)
-                        else item.criterion
-                        for item in reply.criteria
-                    ]
-                    expected = condition_ids if compact else criteria
-                    if actual != expected:
+                    actual = [item.criterion for item in reply.criteria]
+                    if actual != criteria:
                         diagnostics.mismatched_criteria = [
                             index
-                            for index in range(max(len(actual), len(expected)))
+                            for index in range(max(len(actual), len(criteria)))
                             if index >= len(actual)
-                            or index >= len(expected)
-                            or actual[index] != expected[index]
+                            or index >= len(criteria)
+                            or actual[index] != criteria[index]
                         ][:20]
                         raise _VerificationFailure("verification_criteria_mismatch")
                     return Verification(
-                        criteria=[
-                            CriterionVerdict(
-                                criterion=criterion,
-                                verdict=item.verdict,
-                                reason=item.reason,
-                            )
-                            for criterion, item in zip(
-                                criteria, reply.criteria, strict=True
-                            )
-                        ],
-                        facts=reply.facts,
+                        **reply.model_dump(),
                         observed_at=observed_at,
                         screenshot_sha256=digest,
                         diagnostics=diagnostics,

@@ -152,7 +152,11 @@ def verifier_clients(monkeypatch):
                         content=json.dumps(
                             {
                                 "criteria": [
-                                    {"id": "c1", "verdict": "met", "reason": "seen"}
+                                    {
+                                        "criterion": "title",
+                                        "verdict": "met",
+                                        "reason": "seen",
+                                    }
                                 ],
                                 "facts": [],
                             }
