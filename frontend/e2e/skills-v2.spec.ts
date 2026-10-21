@@ -3,6 +3,8 @@ import type { SkillDefinition } from '../src/api';
 
 const skill: SkillDefinition = {
   id: 'wechat-contact',
+  app: { id: 'wechat', name: '微信' },
+  icon: 'message-circle',
   version: 3,
   name: '打开联系人',
   description: '进入指定联系人的聊天页面',
@@ -99,7 +101,11 @@ const history = {
   execution_summary: summary,
 };
 
-async function mockApp(page: Page, planner = true) {
+async function mockApp(
+  page: Page,
+  planner = true,
+  catalog: SkillDefinition[] = [skill]
+) {
   await page.addInitScript(() => localStorage.setItem('locale', 'zh'));
   await page.routeWebSocket(/\/socket\.io\//, () => {});
   await page.route('**/api/**', route => {
@@ -132,7 +138,7 @@ async function mockApp(page: Page, planner = true) {
         },
       });
     if (path === '/api/skills')
-      return route.fulfill({ json: { skills: [skill] } });
+      return route.fulfill({ json: { skills: catalog } });
     if (path === '/api/task-sessions') return route.fulfill({ json: session });
     if (path.endsWith('/tasks') && path.includes('/task-sessions/'))
       return route.fulfill({
@@ -228,6 +234,8 @@ test('copies a built-in into an editable versioned skill with structured criteri
     name: '我的联系人导航',
     success_criteria: ['聊天标题是 {{contact}}', '输入框为空'],
     parameters: skill.parameters,
+    app: skill.app,
+    icon: skill.icon,
   });
   expect(created?.steps[0]).toMatchObject({
     effect: 'navigation',
@@ -241,7 +249,8 @@ test('runs the exact skill version with parameters and renders route and honest 
   await mockApp(page);
   await page.goto('/chat?serial=test-serial');
   await page.getByLabel('执行方式', { exact: true }).selectOption('skill');
-  await page.getByLabel('选择技能', { exact: true }).selectOption(skill.id);
+  await page.getByRole('combobox', { name: '选择技能' }).click();
+  await page.getByRole('option', { name: /打开联系人/ }).click();
   await page.getByRole('button', { name: '提交任务' }).click();
   await expect(
     page.getByText('请填写技能必填参数并确认最终完成条件。')
@@ -378,9 +387,9 @@ test('edits a schedule while preserving its pinned historical version', async ({
   await page.goto('/scheduled-tasks');
   await page.getByRole('button', { name: '编辑', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await expect(dialog.getByRole('combobox', { name: '选择技能' })).toHaveValue(
-    'wechat-contact@2'
-  );
+  await expect(
+    dialog.getByRole('combobox', { name: '选择技能' })
+  ).toContainText('打开联系人 · v2');
   await expect(dialog.getByLabel('联系人姓名')).toHaveValue('李四');
   await dialog.getByRole('button', { name: '保存', exact: true }).click();
   await expect(dialog).toHaveCount(0);
@@ -391,4 +400,167 @@ test('edits a schedule while preserving its pinned historical version', async ({
   });
   expect(saved).not.toHaveProperty('execution_mode');
   expect(saved).not.toHaveProperty('workflow_uuid');
+});
+
+const dianping: SkillDefinition = {
+  ...skill,
+  id: 'dianping_search_shops',
+  name: '大众点评：按城市搜索店铺',
+  version: 1,
+  app: { id: 'dianping', name: '大众点评' },
+  icon: 'search',
+  platforms: ['android'],
+};
+const general: SkillDefinition = {
+  ...skill,
+  id: 'general-check',
+  name: '通用检查',
+  app: null,
+  icon: null,
+  builtin: false,
+};
+const unknownApp: SkillDefinition = {
+  ...skill,
+  id: 'another-app-skill',
+  name: '其他应用检查',
+  app: { id: 'another', name: '其他应用' },
+  icon: 'constructor',
+  builtin: false,
+};
+
+test('groups and filters application skills with local icons on desktop and mobile themes', async ({
+  page,
+}, testInfo) => {
+  await mockApp(page, true, [skill, dianping, general, unknownApp]);
+  await page.goto('/skills');
+  await expect(
+    page.getByRole('region', { name: '微信', exact: true })
+  ).toContainText(skill.name);
+  await expect(
+    page.getByRole('region', { name: '大众点评', exact: true })
+  ).toContainText(dianping.name);
+  await expect(
+    page.getByRole('region', { name: '通用技能', exact: true })
+  ).toContainText(general.name);
+  await expect(
+    page.locator('[data-app-icon="wechat"] svg').first()
+  ).toBeVisible();
+  await expect(
+    page.locator('[data-app-icon="dianping"] svg').first()
+  ).toBeVisible();
+  await expect(
+    page.locator('[data-app-icon="another"] svg').first()
+  ).toBeVisible();
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const dark of [false, true]) {
+      await page.evaluate(
+        value => document.documentElement.classList.toggle('dark', value),
+        dark
+      );
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth
+          )
+        )
+        .toBe(true);
+      for (const card of await page.locator('[data-slot="card"]').all()) {
+        const box = await card.boundingBox();
+        expect(box && box.x + box.width).toBeLessThanOrEqual(width);
+      }
+      await page.screenshot({
+        path: testInfo.outputPath(
+          `skills-${width}-${dark ? 'dark' : 'light'}.png`
+        ),
+        fullPage: true,
+      });
+    }
+  }
+  await page.getByRole('button', { name: '大众点评', exact: true }).click();
+  await expect(
+    page.getByRole('region', { name: '大众点评', exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: '微信', exact: true })
+  ).toHaveCount(0);
+  await page.getByRole('button', { name: '通用技能', exact: true }).click();
+  await expect(
+    page.getByRole('region', { name: '通用技能', exact: true })
+  ).toBeVisible();
+});
+
+test('edits custom app metadata and returns a skill to the general category', async ({
+  page,
+}) => {
+  await mockApp(page);
+  let created: SkillDefinition | undefined;
+  await page.route('**/api/skills', route => {
+    if (route.request().method() === 'POST') {
+      created = route.request().postDataJSON();
+      return route.fulfill({ json: created });
+    }
+    return route.fallback();
+  });
+  await page.goto('/skills');
+  await page.getByRole('button', { name: '复制为自定义技能' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('技能标识').fill('my-app-skill');
+  await dialog
+    .getByLabel('所属应用', { exact: true })
+    .selectOption('__custom__');
+  await dialog.getByLabel('应用标识').fill('wechat');
+  await expect(dialog.getByLabel('所属应用', { exact: true })).toHaveValue(
+    'wechat'
+  );
+  await expect(dialog.getByLabel('应用名称')).toHaveCount(0);
+  await dialog
+    .getByLabel('所属应用', { exact: true })
+    .selectOption('__custom__');
+  await dialog.getByLabel('应用标识').fill('my-app');
+  await dialog.getByLabel('应用名称').fill('我的应用');
+  await dialog.getByLabel('功能图标').selectOption('search');
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(created).toMatchObject({
+    app: { id: 'my-app', name: '我的应用' },
+    icon: 'search',
+  });
+  await page.getByRole('button', { name: '复制为自定义技能' }).click();
+  await dialog.getByLabel('所属应用', { exact: true }).selectOption('');
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(created?.app).toBeNull();
+});
+
+test('shared chat picker supports keyboard, groups, platform and disabled filtering', async ({
+  page,
+}) => {
+  await mockApp(page, true, [
+    skill,
+    dianping,
+    general,
+    { ...skill, id: 'disabled-skill', name: '已停用技能', enabled: false },
+    { ...skill, id: 'ios-skill', name: 'iOS限定技能', platforms: ['ios'] },
+  ]);
+  await page.goto('/chat?serial=test-serial');
+  await page.getByLabel('执行方式', { exact: true }).selectOption('skill');
+  const picker = page.getByRole('combobox', { name: '选择技能' });
+  await picker.focus();
+  await picker.press('ArrowDown');
+  await expect(page.getByRole('listbox')).toBeVisible();
+  await expect(
+    page.getByRole('option', { name: /已停用技能|iOS限定技能/ })
+  ).toHaveCount(0);
+  await page.getByRole('option', { name: /通用检查/ }).press('Home');
+  await page.keyboard.press('Enter');
+  await expect(picker).toContainText('通用检查');
+  await expect(picker).toBeFocused();
+  await picker.click();
+  await expect(
+    page.getByRole('group', { name: '大众点评', exact: true })
+  ).toBeVisible();
+  await page.getByRole('option', { name: /大众点评：按城市搜索店铺/ }).click();
+  await expect(picker).toContainText('大众点评：按城市搜索店铺');
+  await expect(picker.locator('[data-app-icon="dianping"]')).toBeVisible();
 });

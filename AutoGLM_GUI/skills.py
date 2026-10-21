@@ -99,9 +99,19 @@ class SkillStep(BaseModel):
         return self
 
 
+class SkillApp(BaseModel):
+    """Presentation metadata; application identity does not grant device authority."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    id: Slug
+    name: str = Field(min_length=1, max_length=120)
+
+
 class SkillDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: Slug
+    app: SkillApp | None = None
+    icon: Slug | None = None
     version: int = Field(default=1, ge=1, strict=True)
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
@@ -294,6 +304,13 @@ def _builtins() -> list[SkillDefinition]:
     return [
         SkillDefinition(
             id=identifier,
+            app=SkillApp(id="wechat", name="微信"),
+            icon={
+                "open_wechat": "smartphone",
+                "search_wechat_contact": "search",
+                "open_wechat_chat": "message-circle",
+                "view_wechat_profile": "contact",
+            }[identifier],
             name=name,
             description="内置导航技能；首次在目标设备运行仍需验证应用界面。",
             goal=goal,
@@ -310,6 +327,8 @@ def _builtins() -> list[SkillDefinition]:
     ] + [
         SkillDefinition(
             id="ios_wechat_open_group",
+            app=SkillApp(id="wechat", name="微信"),
+            icon="users",
             name="搜索并进入微信群",
             description="从已解锁的 iPhone 主屏幕打开微信，核对精确群名并进入；不发送消息。需要系统简体拼音全键盘。",
             platforms=["ios"],
@@ -357,13 +376,28 @@ def _builtins() -> list[SkillDefinition]:
     ]
 
 
+def _legacy_presentation(raw: object) -> object:
+    # Enrich only this historical ID and only absent fields; explicit app=null
+    # remains a user's choice. Never rewrite the persisted revisions on read.
+    if isinstance(raw, dict) and raw.get("id") == "dianping_city_shop_search":
+        return {"app": {"id": "dianping", "name": "大众点评"}, "icon": "search", **raw}
+    return raw
+
+
 class SkillManager:
     """Atomic catalog with retained immutable revisions and optimistic updates."""
 
     def __init__(self, path: Path | None = None):
         self.path = path or Path.home() / ".config" / "autoglm" / "skills.json"
         self._lock = RLock()
-        self._builtins = {skill.id: skill for skill in _builtins()}
+        builtin_path = Path(__file__).parent / "resources" / "skills" / "dianping.json"
+        definitions = [
+            *_builtins(),
+            SkillDefinition.model_validate_json(
+                builtin_path.read_text(encoding="utf-8")
+            ),
+        ]
+        self._builtins = {skill.id: skill for skill in definitions}
 
     @contextmanager
     def _write_lock(self) -> Iterator[None]:
@@ -435,7 +469,10 @@ class SkillManager:
                 item in self._builtins for item in retired_ids
             ):
                 raise ValueError("Invalid retired skill identifiers")
-            skills = [SkillDefinition.model_validate(item) for item in data["skills"]]
+            skills = [
+                SkillDefinition.model_validate(_legacy_presentation(item))
+                for item in data["skills"]
+            ]
             if any(skill.id in retired_ids for skill in skills):
                 raise ValueError("Retired skill cannot have active revisions")
             if any(skill.builtin or skill.id in self._builtins for skill in skills):

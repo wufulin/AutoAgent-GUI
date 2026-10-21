@@ -894,6 +894,8 @@ export interface SkillStep {
   max_resumes: number;
 }
 export interface SkillDefinition {
+  app?: { id: string; name: string } | null;
+  icon?: string | null;
   platforms?: string[];
   id: string;
   version: number;

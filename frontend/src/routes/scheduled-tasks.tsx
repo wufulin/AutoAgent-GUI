@@ -19,6 +19,8 @@ import {
   type DeviceGroup,
 } from '../api';
 import { SkillParameters } from '../components/SkillParameters';
+import { SkillPicker } from '../components/SkillPicker';
+import { SkillIcon } from '../components/SkillIcon';
 import { skillDefaults, validSkillParameters } from '../lib/skills';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -381,7 +383,12 @@ export function ScheduledTasksComponent() {
                     <span className="text-slate-500 dark:text-slate-400">
                       {t.scheduledTasks.skill}:{' '}
                     </span>
-                    <span className="font-medium">
+                    <span className="inline-flex items-center gap-2 font-medium">
+                      <SkillIcon
+                        skill={
+                          skills.find(skill => skill.id === task.skill_id) || {}
+                        }
+                      />
                       {getSkillName(task.skill_id)} · v{task.skill_version}
                     </span>
                   </div>
@@ -520,39 +527,23 @@ export function ScheduledTasksComponent() {
             )}
             <div className="space-y-2">
               <Label htmlFor="scheduled-skill">{t.skills.select}</Label>
-              <select
+              <SkillPicker
                 id="scheduled-skill"
-                className="w-full rounded-md border bg-background p-2 text-sm"
+                skills={skills}
                 value={
                   selectedSkill
                     ? `${selectedSkill.id}@${selectedSkill.version}`
                     : ''
                 }
-                onChange={event => {
-                  const selected = skills.find(
-                    item => `${item.id}@${item.version}` === event.target.value
-                  );
-                  if (selected)
-                    setFormData(prev => ({
-                      ...prev,
-                      skill_id: selected.id,
-                      skill_version: selected.version,
-                      parameters: skillDefaults(selected),
-                    }));
-                }}
-              >
-                <option value="">{t.skills.select}</option>
-                {skills
-                  .filter(item => item.enabled)
-                  .map(item => (
-                    <option
-                      key={`${item.id}@${item.version}`}
-                      value={`${item.id}@${item.version}`}
-                    >
-                      {item.name} · v{item.version}
-                    </option>
-                  ))}
-              </select>
+                onChange={selected =>
+                  setFormData(prev => ({
+                    ...prev,
+                    skill_id: selected.id,
+                    skill_version: selected.version,
+                    parameters: skillDefaults(selected),
+                  }))
+                }
+              />
               {formData.skill_id && !selectedSkill && (
                 <p className="text-xs text-amber-600">
                   {t.skills.skillUnavailable} ({t.skills.pinnedVersion}: v

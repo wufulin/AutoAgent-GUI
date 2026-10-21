@@ -39,3 +39,31 @@ export function textLines(value: string): string[] {
     .map(line => line.trim())
     .filter(Boolean);
 }
+
+export function skillGroupKey(skill: SkillDefinition): string {
+  return skill.app ? `app:${skill.app.id}` : 'general';
+}
+
+export function groupSkills(skills: SkillDefinition[], generalLabel: string) {
+  const groups = new Map<
+    string,
+    { key: string; name: string; skills: SkillDefinition[] }
+  >();
+  for (const skill of skills) {
+    const key = skillGroupKey(skill);
+    if (!groups.has(key))
+      groups.set(key, {
+        key,
+        name: skill.app?.name || generalLabel,
+        skills: [],
+      });
+    groups.get(key)?.skills.push(skill);
+  }
+  return Array.from(groups.values()).sort((a, b) =>
+    a.key === 'general'
+      ? -1
+      : b.key === 'general'
+        ? 1
+        : a.name.localeCompare(b.name)
+  );
+}
