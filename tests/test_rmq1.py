@@ -692,3 +692,408 @@ def test_manager_preserves_rmq1_and_blocks_android_dispatch(monkeypatch, tmp_pat
     manager.remove_rmq1_device(serial)
     assert manager.get_serial_by_device_id(serial) is None
     assert not manager.get_devices()
+
+
+def live_gesture(device, **overrides):
+    from AutoGLM_GUI.devices.rmq1_live import LiveGesture
+    import queue
+
+    messages = queue.Queue()
+    frame = device.observe()
+    args = dict(
+        action_id=str(uuid4()),
+        session_id=device.session_id,
+        frame_id=frame["frame_id"],
+        point=(0.5, 0.5),
+        notify=messages.put,
+    )
+    args.update(overrides)
+    return LiveGesture(device, **args), messages
+
+
+def test_live_quick_up_preserves_down_minimum_and_latest_final_point(device):
+    events = []
+    send = device.transport.socket.send
+
+    def record(value):
+        events.append((time.monotonic(), value))
+        send(value)
+
+    device.transport.socket.send = record
+    live, messages = live_gesture(device)
+    live.start()
+    # UP arrives before asynchronous validation/DOWN has completed.
+    live.update((0.5, 0.6), finish=True)
+    assert messages.get(timeout=2)["type"] == "started"
+    result = messages.get(timeout=2)
+    live.join()
+    down = next(at for at, value in events if value == b"\x02\x01left")
+    up = next(at for at, value in events if value == b"\x02\x00left")
+    assert up - down >= 0.05
+    assert result["outcome"] == "completed"
+    moves = [
+        struct.unpack(">Bhh", value)
+        for _, value in events
+        if isinstance(value, bytes) and value[0] == 3
+    ]
+    assert moves[-1][2] == round(0.6 * 65535 - 32768)
+    assert not device.recovery_required
+
+
+def test_live_moves_coalesce_without_losing_up(device):
+    live, messages = live_gesture(device)
+    live.start()
+    assert messages.get(timeout=2)["type"] == "started"
+    with live._condition:
+        for i in range(300):
+            live.update((0.5, 0.3 + i / 1000))
+        live.update((0.5, 0.7), finish=True)
+    assert messages.get(timeout=2)["success"]
+    live.join()
+    packets = device.transport.socket.sent
+    moves = [p for p in packets if isinstance(p, bytes) and p[0] == 3]
+    assert len(moves) == 2
+    assert struct.unpack(">Bhh", moves[-1])[2] == round(0.7 * 65535 - 32768)
+    assert packets.count(b"\x02\x01left") == packets.count(b"\x02\x00left") == 1
+
+
+@pytest.mark.parametrize("reason", ["cancel", "deadline", "shutdown"])
+def test_live_cancellation_and_deadline_release_original_channel(device, reason):
+    live, messages = live_gesture(device)
+    if reason == "deadline":
+        live.MAX_HOLD_SECONDS = 0.08
+    live.start()
+    assert messages.get(timeout=2)["type"] == "started"
+    if reason == "cancel":
+        live.cancel()
+    elif reason == "shutdown":
+        device._stop.set()
+    result = messages.get(timeout=2)
+    live.join()
+    assert result["cancelled"] and result["outcome"] == "completed"
+    assert result["receipt_scope"] == "kvm_transport"
+    assert device.transport.socket.sent.count(b"\x02\x00left") == 1
+    assert not device.recovery_required
+
+
+def test_live_unknown_is_not_replayed_and_marker_precedes_hid(device):
+    live, messages = live_gesture(device)
+    send = device.transport.socket.send
+
+    def fail(value):
+        if isinstance(value, bytes):
+            assert device._marker.read_text() == live.action_id
+        if value == b"\x02\x00left":
+            raise OSError("private details")
+        send(value)
+
+    device.transport.socket.send = fail
+    live.start()
+    assert messages.get(timeout=2)["type"] == "started"
+    live.update((0.5, 0.5), finish=True)
+    result = messages.get(timeout=2)
+    live.join()
+    assert result["outcome"] == "unknown" and device.recovery_required
+    assert "private" not in str(result)
+    count = len(device.transport.socket.sent)
+    from AutoGLM_GUI.devices.rmq1_live import LiveGesture
+
+    retry = LiveGesture(
+        device,
+        action_id=live.action_id,
+        session_id=live.session_id,
+        frame_id=live.frame_id,
+        point=live.point,
+        notify=messages.put,
+    )
+    retry.start()
+    assert messages.get(timeout=2) == result
+    retry.join()
+    assert len(device.transport.socket.sent) == count
+
+
+def test_live_hybrid_settle_revalidates_before_down(tmp_path):
+    device = make_device(tmp_path, "usb_hybrid")
+    live, messages = live_gesture(device)
+    send = device.transport.socket.send
+
+    def change_after_motion(value):
+        send(value)
+        if isinstance(value, bytes) and value[0] == 3:
+            device.transport.config["mobile_orientation"] = (
+                "portrait_system_landscape_flipped"
+            )
+
+    device.transport.socket.send = change_after_motion
+    live.start()
+    result = messages.get(timeout=2)
+    live.join()
+    assert result["outcome"] == "unknown"
+    assert b"\x02\x01left" not in device.transport.socket.sent
+    assert device.recovery_required
+
+
+def test_preview_jpeg_is_latest_only_and_requires_render_ack(device):
+    from PIL import Image
+    import base64
+    import io
+
+    device._latest = (time.monotonic(), Image.new("RGB", (64, 128), "red"), 64, 128)
+    payload, frame = device.preview(0)
+    assert payload["mime"] == "image/jpeg"
+    assert Image.open(io.BytesIO(base64.b64decode(payload["image"]))).format == "JPEG"
+    assert payload["frame_id"] not in device._observed
+    device.acknowledge_preview(payload["frame_id"], frame)
+    assert payload["frame_id"] in device._observed
+    assert device.preview(frame.at, timeout=0.01) is None
+    latest_at = time.monotonic()
+    device._latest = (latest_at, Image.new("RGB", (64, 128), "blue"), 64, 128)
+    newer, newer_frame = device.preview(frame.at)
+    assert newer_frame.at == latest_at and newer["image"] != payload["image"]
+    png = device.observe()
+    assert Image.open(io.BytesIO(base64.b64decode(png["image"]))).format == "PNG"
+
+
+def test_live_preview_does_not_report_active_marker_as_unknown(device):
+    live, messages = live_gesture(device)
+    live.start()
+    assert messages.get(timeout=2)["type"] == "started"
+    payload, _ = device.preview(0)
+    assert payload["input_active"] and not payload["recovery_required"]
+    live.cancel()
+    assert messages.get(timeout=2)["success"]
+    live.join()
+
+
+def test_live_same_size_orientation_change_stops_further_motion(device):
+    live, messages = live_gesture(device)
+    live.start()
+    assert messages.get(timeout=2)["type"] == "started"
+    device.transport.config["mobile_orientation"] = "portrait_system_landscape_flipped"
+    device._preview_geometry = None
+    payload, _ = device.preview(0)
+    assert payload["geometry_id"].endswith("portrait_system_landscape_flipped")
+    result = messages.get(timeout=2)
+    live.join()
+    assert result["outcome"] == "unknown" and device.recovery_required
+
+
+def rmq1_client(device, monkeypatch):
+    manager = SimpleNamespace(get_rmq1_device=lambda device_id: device)
+    monkeypatch.setattr(DeviceManager, "get_instance", lambda: manager)
+    app = FastAPI()
+    app.include_router(api.router)
+    return TestClient(app)
+
+
+def test_control_socket_disconnect_releases_input(device, monkeypatch):
+    args = gesture_args(device)
+    with rmq1_client(device, monkeypatch) as client:
+        with client.websocket_connect(
+            "/api/rmq1/control?device_id=" + device.device_id
+        ) as websocket:
+            websocket.send_json(
+                dict(
+                    type="down",
+                    action_id=args["action_id"],
+                    session_id=args["session_id"],
+                    frame_id=args["frame_id"],
+                    point=args["start"],
+                )
+            )
+            assert websocket.receive_json()["type"] == "started"
+        # Context exit waits for endpoint cleanup; no hardware input remains.
+    assert b"\x02\x00left" in device.transport.socket.sent
+    assert not device.recovery_required
+
+
+def test_preview_socket_ack_backpressure_authorizes_only_displayed_frame(
+    device, monkeypatch
+):
+    with rmq1_client(device, monkeypatch) as client:
+        with client.websocket_connect(
+            "/api/rmq1/preview?device_id=" + device.device_id
+        ) as websocket:
+            first = websocket.receive_json()
+            assert first["frame_id"] not in device._observed
+            device._latest = (time.monotonic(), "skipped", 1920, 1080)
+            device._latest = (time.monotonic(), "latest", 1920, 1080)
+            websocket.send_json({"type": "ack", "frame_id": first["frame_id"]})
+            assert websocket.receive_json() == {
+                "type": "ready",
+                "frame_id": first["frame_id"],
+            }
+            latest = websocket.receive_json()
+            assert latest["image"] == "latest"
+            assert first["frame_id"] in device._observed
+            assert latest["frame_id"] not in device._observed
+
+
+@pytest.mark.parametrize(
+    "origin", ["http://evil.example", "null", "https://testserver"]
+)
+def test_control_socket_rejects_cross_origin_before_device_lookup(
+    device, monkeypatch, origin
+):
+    from starlette.websockets import WebSocketDisconnect
+
+    monkeypatch.setenv("AUTOGLM_CORS_ORIGINS", "http://localhost:3000")
+    with rmq1_client(device, monkeypatch) as client:
+        with pytest.raises(WebSocketDisconnect) as error:
+            with client.websocket_connect(
+                "/api/rmq1/control?device_id=" + device.device_id,
+                headers={"origin": origin},
+            ):
+                pass
+        assert error.value.code == 1008
+    assert not device.transport.socket.sent
+
+
+@pytest.mark.parametrize(
+    "origin", ["http://testserver", "http://localhost:3000", "http://127.0.0.1:3000"]
+)
+def test_control_socket_accepts_same_origin_and_local_vite(device, monkeypatch, origin):
+    monkeypatch.delenv("AUTOGLM_CORS_ORIGINS", raising=False)
+    with rmq1_client(device, monkeypatch) as client:
+        with client.websocket_connect(
+            "/api/rmq1/control?device_id=" + device.device_id,
+            headers={"origin": origin},
+        ) as websocket:
+            websocket.send_text("{}")
+            assert websocket.receive_json()["type"] == "error"
+    assert not device.transport.socket.sent
+
+
+def test_live_watchdog_interrupts_stuck_original_socket_without_replay(device):
+    import threading
+
+    live, messages = live_gesture(device)
+    live.MAX_HOLD_SECONDS = 0.06
+    released = threading.Event()
+    raw = SimpleNamespace(shutdown=lambda how: released.set(), close=lambda: None)
+    device.transport.socket.socket = raw
+    send = device.transport.socket.send
+
+    def blocked(value):
+        if value == b"\x02\x01left":
+            assert released.wait(2), "independent watchdog failed to unblock send"
+            raise OSError("send interrupted")
+        send(value)
+
+    device.transport.socket.send = blocked
+    live.start()
+    result = messages.get(timeout=2)
+    live.join()
+    assert released.is_set()
+    assert result["outcome"] == "unknown" and device.recovery_required
+    assert live.done.is_set()
+
+
+def test_duplicate_live_down_cannot_report_terminal_while_pointer_is_held(
+    device, monkeypatch
+):
+    args = gesture_args(device)
+    message = dict(
+        type="down",
+        action_id=args["action_id"],
+        session_id=args["session_id"],
+        frame_id=args["frame_id"],
+        point=args["start"],
+    )
+    with rmq1_client(device, monkeypatch) as client:
+        with client.websocket_connect(
+            "/api/rmq1/control?device_id=" + device.device_id
+        ) as websocket:
+            websocket.send_json(message)
+            assert websocket.receive_json()["type"] == "started"
+            websocket.send_json(message)
+            websocket.send_json(
+                {"type": "up", "action_id": args["action_id"], "point": [0.5, 0.6]}
+            )
+            result = websocket.receive_json()
+            assert result["type"] == "result" and result["outcome"] == "completed"
+    assert device.transport.socket.sent.count(b"\x02\x01left") == 1
+    assert device.transport.socket.sent.count(b"\x02\x00left") == 1
+
+
+def test_http_gesture_rejection_preserves_409_and_unknown_recovery_state(
+    device, monkeypatch
+):
+    args = {**gesture_args(device), "device_id": device.device_id}
+    device._marker.write_text("prior-unknown")
+    with rmq1_client(device, monkeypatch) as client:
+        response = client.post("/api/rmq1/gesture", json=args)
+    assert response.status_code == 409
+    assert response.json()["outcome"] == "rejected"
+    assert response.json()["recovery_required"]
+    assert isinstance(response.json()["detail"], str)
+    assert not device.transport.socket.sent
+
+
+def test_control_invalid_message_cancels_active_pointer_before_closing(
+    device, monkeypatch
+):
+    args = gesture_args(device)
+    with rmq1_client(device, monkeypatch) as client:
+        with client.websocket_connect(
+            "/api/rmq1/control?device_id=" + device.device_id
+        ) as websocket:
+            websocket.send_json(
+                dict(
+                    type="down",
+                    action_id=args["action_id"],
+                    session_id=args["session_id"],
+                    frame_id=args["frame_id"],
+                    point=args["start"],
+                )
+            )
+            assert websocket.receive_json()["type"] == "started"
+            websocket.send_text("x" * 4097)
+            assert websocket.receive_json()["type"] == "error"
+    assert b"\x02\x00left" in device.transport.socket.sent
+    assert not device.recovery_required
+
+
+def test_recovery_cannot_queue_behind_input_and_clear_a_later_unknown(device):
+    import threading
+
+    live, messages = live_gesture(device)
+    send = device.transport.socket.send
+
+    def fail_release(value):
+        if value == b"\x02\x00left":
+            raise OSError("release lost after recovery confirmation")
+        send(value)
+
+    device.transport.socket.send = fail_release
+    live.start()
+    assert messages.get(timeout=2)["type"] == "started"
+    recovered = threading.Event()
+    errors = []
+
+    def request_recovery():
+        try:
+            device.recover(device.session_id)
+        except RMQ1Error as error:
+            errors.append(str(error))
+        finally:
+            recovered.set()
+
+    confirmation = threading.Thread(target=request_recovery, daemon=True)
+    confirmation.start()
+    rejected_while_active = recovered.wait(0.2)
+    live.update((0.5, 0.5), finish=True)
+    result = messages.get(timeout=2)
+    live.join()
+    confirmation.join(timeout=1)
+    assert rejected_while_active, "recovery must reject, never queue behind input"
+    assert errors and "正在执行" in errors[0]
+    assert result["outcome"] == "unknown" and device.recovery_required
+    assert device._marker.read_text() == live.action_id
+
+    # A fresh confirmation after the failed gesture may recover while idle;
+    # recovery itself must never send or replay any HID report.
+    sent_count = len(device.transport.socket.sent)
+    device.recover(device.session_id)
+    assert not device.recovery_required
+    assert len(device.transport.socket.sent) == sent_count
