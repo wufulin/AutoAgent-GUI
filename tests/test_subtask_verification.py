@@ -33,18 +33,6 @@ def reply_content(criteria=CRITERIA, verdict="met", **extra):
     )
 
 
-def compact_reply(ids=("c1", "c2"), verdict="met"):
-    return json.dumps(
-        {
-            "criteria": [
-                {"id": identifier, "verdict": verdict, "reason": "seen"}
-                for identifier in ids
-            ],
-            "facts": [],
-        }
-    )
-
-
 def response(content=None, *, finish_reason="stop", usage=None, choices=None):
     return SimpleNamespace(
         choices=(
@@ -223,42 +211,24 @@ def test_deepseek_verification_preserves_provider_thinking_configuration(
     }
 
 
-@pytest.mark.parametrize("verdict", ["met", "unmet", "unknown"])
-def test_compact_reply_restores_complete_ordered_public_criteria(harness, verdict):
-    harness.create.return_value = response(compact_reply(verdict=verdict))
-    result = asyncio.run(harness.run())
-    assert result.error is None
-    assert [item.criterion for item in result.criteria] == CRITERIA
-    assert [item.verdict for item in result.criteria] == [verdict, verdict]
-    assert all("id" not in item for item in result.model_dump()["criteria"])
-    content = harness.create.call_args.kwargs["messages"][1]["content"]
-    prompt = json.loads(
-        next(item["text"] for item in content if item["type"] == "text")
-    )
-    assert prompt["success_criteria"] == [
-        {"id": "c1", "criterion": "title"},
-        {"id": "c2", "criterion": "list"},
-    ]
-
-
 @pytest.mark.parametrize(
-    "ids,error",
+    "criteria,error",
     [
-        (["c2", "c1"], "verification_criteria_mismatch"),
-        (["c1", "c1"], "verification_criteria_mismatch"),
-        (["c1"], "verification_criteria_mismatch"),
-        (["c1", "c2", "c3"], "verification_criteria_mismatch"),
-        (["c1", "unknown"], "verification_criteria_mismatch"),
-        (["C1", "c2"], "verification_criteria_mismatch"),
-        ([1, "c2"], "verification_schema_invalid"),
-        ([True, "c2"], "verification_schema_invalid"),
-        ([None, "c2"], "verification_schema_invalid"),
+        (["list", "title"], "verification_criteria_mismatch"),
+        (["title", "title"], "verification_criteria_mismatch"),
+        (["title"], "verification_criteria_mismatch"),
+        (["title", "list", "extra"], "verification_criteria_mismatch"),
+        (["title", "unknown"], "verification_criteria_mismatch"),
+        (["Title", "list"], "verification_criteria_mismatch"),
+        ([1, "list"], "verification_schema_invalid"),
+        ([True, "list"], "verification_schema_invalid"),
+        ([None, "list"], "verification_schema_invalid"),
     ],
 )
-def test_compact_criteria_reject_missing_reordered_unknown_or_nonstring_ids(
-    harness, ids, error
+def test_full_criteria_reject_missing_reordered_duplicate_or_nonstring_conditions(
+    harness, criteria, error
 ):
-    harness.create.return_value = response(compact_reply(ids))
+    harness.create.return_value = response(reply_content(criteria))
     result = asyncio.run(harness.run())
     assert result.error == error
     assert result.criteria == []
@@ -269,19 +239,11 @@ def test_compact_criteria_reject_missing_reordered_unknown_or_nonstring_ids(
     "content,error",
     [
         (
-            '{"criteria":[{"id":"c1","criterion":"title","verdict":"met","reason":"seen"}],"facts":[]}',
-            "verification_schema_invalid",
-        ),
-        (
-            '{"criteria":[{"id":"c1","verdict":"met","reason":"seen"},{"criterion":"list","verdict":"met","reason":"seen"}],"facts":[]}',
-            "verification_schema_invalid",
-        ),
-        (
             '{"criteria":[],"criteria":[],"facts":[]}',
             "verification_json_invalid",
         ),
         (
-            '{"criteria":[{"id":"c1","id":"c2","verdict":"met","reason":"seen"}],"facts":[]}',
+            '{"criteria":[{"criterion":"title","criterion":"list","verdict":"met","reason":"seen"}],"facts":[]}',
             "verification_json_invalid",
         ),
         ('{"criteria":[],"facts":[NaN]}', "verification_json_invalid"),
@@ -291,13 +253,6 @@ def test_ambiguous_or_nonstandard_json_cannot_hide_conditions(harness, content, 
     harness.create.return_value = response(content)
     result = asyncio.run(harness.run())
     assert result.error == error
-    assert result.criteria == []
-
-
-def test_compact_reply_still_rejects_truncated_valid_json(harness):
-    harness.create.return_value = response(compact_reply(), finish_reason="length")
-    result = asyncio.run(harness.run())
-    assert result.error == "verification_output_truncated"
     assert result.criteria == []
 
 
