@@ -393,8 +393,12 @@ async def verify_completion(
                         '{"criteria":[{"criterion":"原条件逐字复制",'
                         '"verdict":"met或unmet或unknown","reason":"简短截图证据"}],'
                         '"facts":["简短可观察事实"]}。'
+                        "顶层仅含criteria和facts，不得有verdict。"
+                        "criteria必须是对象数组，不得是字符串数组；"
+                        "每个对象仅含criterion、verdict、reason三个字段。"
                         "每个JSON对象的键只能出现一次。每项条件必须检查，"
-                        "criteria必须逐字复制输入条件、一一对应、顺序一致，不得遗漏或增加。"
+                        "每个criterion字段逐字复制对应的输入条件；"
+                        "criteria内的对象与输入条件一一对应、顺序一致，不得遗漏或增加。"
                     )
                     messages = [
                         MessageBuilder.create_system_message(instructions),
