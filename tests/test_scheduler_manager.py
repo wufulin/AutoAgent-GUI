@@ -265,3 +265,60 @@ def test_schedule_persistence_failure_does_not_publish_task(
     assert manager.list_tasks() == []
     assert jobs == []
     SchedulerManager._instance = None
+
+
+def test_run_summary_save_failure_keeps_terminal_task_evidence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    SchedulerManager._instance = None
+    manager = SchedulerManager()
+    manager._tasks_path = tmp_path / "scheduled_tasks.json"
+    task = ScheduledTask(
+        id="scheduled-offline",
+        name="Navigation",
+        skill_id="open_wechat",
+        device_serialnos=["offline"],
+        cron_expression="0 8 * * *",
+    )
+    manager._tasks[task.id] = task
+    store = TaskStore(tmp_path / "tasks.db")
+    monkeypatch.setattr(
+        scheduler_module, "skill_manager", SkillManager(tmp_path / "skills.json")
+    )
+    monkeypatch.setattr(task_store_module, "task_store", store)
+    monkeypatch.setattr(
+        device_manager_module.DeviceManager,
+        "get_instance",
+        classmethod(lambda cls: SimpleNamespace(get_devices=lambda: [])),
+    )
+    warnings = []
+    monkeypatch.setattr(
+        scheduler_module,
+        "logger",
+        SimpleNamespace(info=lambda message: None, warning=warnings.append),
+    )
+
+    def fail_summary_save():
+        raise OSError("sensitive internal storage detail")
+
+    monkeypatch.setattr(manager, "_save_tasks", fail_summary_save)
+    try:
+        # Recording an all-offline run must finish despite the JSON summary
+        # cache failure, leaving the independently committed DB result intact.
+        asyncio.run(manager._execute_task(task.id))
+        records, total = store.list_tasks(source="scheduled", limit=10, offset=0)
+        assert total == 1
+        assert records[0]["status"] == TaskStatus.FAILED.value
+        assert records[0]["final_message"] == "Device offline"
+        assert store.claim_next_queued_task("offline") is None
+        summary = store.get_latest_schedule_summary(task.id)
+        assert summary is not None and summary["last_run_status"] == "failure"
+        assert task.last_run_status == "failure"
+        assert task.last_run_message == "No online devices available"
+        assert any("could not be persisted" in message for message in warnings)
+        assert all(
+            "sensitive internal storage detail" not in message for message in warnings
+        )
+    finally:
+        store.close()
+        SchedulerManager._instance = None

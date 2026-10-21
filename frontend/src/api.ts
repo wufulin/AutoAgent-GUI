@@ -999,8 +999,8 @@ export interface TaskRunResponse {
   executor_key: string;
   session_id: string | null;
   scheduled_task_id: string | null;
-  skill_id: string | null;
-  skill_version: number | null;
+  /** Historical metadata only; workflow execution is no longer supported. */
+  workflow_uuid: string | null;
   schedule_fire_id: string | null;
   device_id: string;
   device_serial: string;

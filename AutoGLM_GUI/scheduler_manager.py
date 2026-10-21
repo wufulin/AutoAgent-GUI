@@ -380,7 +380,15 @@ class SchedulerManager:
             task.last_run_success_count = success_count
             task.last_run_total_count = total_count
             task.last_run_message = message[:500] if message else ""
-            self._save_tasks()
+            try:
+                self._save_tasks()
+            except OSError:
+                # Execution evidence already stored in TaskStore must not be
+                # turned into a scheduler job error by this summary cache.
+                logger.warning(
+                    "Scheduled run summary could not be persisted; "
+                    "keeping the in-memory result"
+                )
             if status == "success":
                 logger.info(f"Scheduled task completed: {task.name}")
             elif status == "partial":
