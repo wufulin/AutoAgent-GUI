@@ -38,7 +38,7 @@ from . import (
     terminal,
     tasks,
     version,
-    workflows,
+    skills,
 )
 
 
@@ -207,7 +207,7 @@ def create_app() -> FastAPI:
     app.include_router(terminal.router)
     app.include_router(tasks.router)
     app.include_router(version.router)
-    app.include_router(workflows.router)
+    app.include_router(skills.router)
 
     # Mount static files BEFORE MCP to ensure they have priority
     # This is critical: FastAPI processes mounts in order, so static files

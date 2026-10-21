@@ -18,6 +18,7 @@ from AutoGLM_GUI.agents.base import AsyncAgentBase
 from AutoGLM_GUI.agents.protocols import AsyncAgent
 from AutoGLM_GUI.config import AgentConfig, ModelConfig
 from AutoGLM_GUI.device_protocol import DeviceProtocol
+from AutoGLM_GUI.execution_metrics import record_model_call, record_usage
 from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.model import MessageBuilder
 from AutoGLM_GUI.prompt_config import get_messages
@@ -425,6 +426,7 @@ class AsyncQwenAgent(AsyncAgentBase, AsyncAgent):
         self, messages: list[dict[str, Any]]
     ) -> AsyncGenerator[dict[str, str], None]:
         """流式调用 OpenAI，yield thinking chunks。"""
+        call_id = record_model_call("executor")
         stream = await self.openai_client.chat.completions.create(
             messages=messages,  # type: ignore[arg-type]
             model=self.model_config.model_name,
@@ -442,6 +444,7 @@ class AsyncQwenAgent(AsyncAgentBase, AsyncAgent):
 
         try:
             async for chunk in stream:
+                record_usage("executor", getattr(chunk, "usage", None), call_id=call_id)
                 if self._cancel_event.is_set():
                     await stream.close()
                     raise asyncio.CancelledError()

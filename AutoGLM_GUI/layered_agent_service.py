@@ -16,6 +16,7 @@ from agents import (
     ModelSettings,
     RunContextWrapper,
     Runner,
+    RunHooks,
     SQLiteSession,
     function_tool,
 )
@@ -24,6 +25,7 @@ from openai import AsyncOpenAI
 
 from AutoGLM_GUI.config import ModelConfig
 from AutoGLM_GUI.config_manager import config_manager
+from AutoGLM_GUI.execution_metrics import record_model_call, record_usage
 from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.model.error_details import (
     serialize_model_error_async,
@@ -49,8 +51,24 @@ partial 有 checkpoint 时，使用完全相同的目标、条件和约束继续
 每次默认10步，可请求1到20步，总任务预算由服务端控制。
 需要读取信息时明确要求观察事实，不能编造剪贴板、文件系统或后台API能力。
 所有必要子任务完成后总结已验证事实；不要声称完成未被证据覆盖的用户目标。
-list_devices 可查询设备；chat 是旧接口兼容工具，新任务优先使用 execute_subtask。
+先调用 list_skills 查看技能目录，目标与技能契约一致时调用 execute_skill，使用明确的版本和参数。
+技能由执行层逐步验收，不要把技能改写成一段文字交给 execute_subtask。
+技能未覆盖的目标才调用 execute_subtask。不得用技能覆盖或省略用户的限制。
+list_devices 可查询设备。完成所有目标后系统还会只读验收用户的原始要求。
 """
+
+
+class PlannerMetricsHooks(RunHooks[SubtaskRunContext]):
+    async def on_llm_start(
+        self,
+        context: RunContextWrapper[SubtaskRunContext],
+        agent: Agent[SubtaskRunContext],
+        system_prompt: str | None,
+        input_items: list[Any],
+    ) -> None:
+        # The SDK normalizes missing usage to zero, so do not treat its zero
+        # defaults as provider-reported tokens. Calls are still counted exactly.
+        context.context.planner_call_ids.append(record_model_call("planner"))
 
 
 class TracedSQLiteSession(SQLiteSession):
@@ -249,6 +267,67 @@ async def chat(
     return result.envelope()
 
 
+@function_tool
+async def list_skills() -> str:
+    """List enabled versioned skills and their declared parameter schemas."""
+    from AutoGLM_GUI.skills import skill_manager
+
+    return json.dumps(
+        [
+            {
+                "id": skill.id,
+                "version": skill.version,
+                "name": skill.name,
+                "description": skill.description,
+                "goal": skill.goal,
+                "parameters": {
+                    key: value.model_dump() for key, value in skill.parameters.items()
+                },
+                "preconditions": skill.preconditions,
+                "success_criteria": skill.success_criteria,
+            }
+            for skill in skill_manager.list_skills()
+            if skill.enabled
+        ],
+        ensure_ascii=False,
+    )
+
+
+@function_tool
+async def execute_skill(
+    ctx: RunContextWrapper[SubtaskRunContext],
+    device_id: str,
+    skill_id: str,
+    skill_version: int,
+    parameters_json: str,
+    constraints: list[str],
+) -> str:
+    """Execute a pinned skill. parameters_json is a JSON object of declared values."""
+    from AutoGLM_GUI.execution import execute_skill as run_skill
+    from AutoGLM_GUI.skills import skill_manager
+
+    try:
+        if len(parameters_json) > 20000:
+            raise ValueError("Parameters too long")
+        parameters = json.loads(parameters_json)
+        if not isinstance(parameters, dict):
+            raise ValueError("Skill parameters must be a JSON object")
+        skill = skill_manager.compile_skill(skill_id, skill_version, parameters)
+        result = await run_skill(ctx.context, device_id, skill, constraints)
+    except (ValueError, KeyError):
+        result = ctx.context.stop(
+            skill_id, "invalid_skill", "技能、版本或参数无效，已停止执行。"
+        )
+    except Exception:
+        result = ctx.context.stop(
+            skill_id, "skill_execution_unavailable", "技能执行服务不可用，已停止执行。"
+        )
+    payload = json.loads(result.envelope())
+    # Step events have already been emitted by the skill state machine.
+    payload["steps"] = 0
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _create_planner_agent(client: AsyncOpenAI) -> Agent[Any]:
     planner_model = get_planner_model()
     model = OpenAIChatCompletionsModel(
@@ -267,7 +346,7 @@ def _create_planner_agent(client: AsyncOpenAI) -> Agent[Any]:
             if planner_model == "deepseek-flash"
             else None,
         ),
-        tools=[list_devices, execute_subtask, chat],
+        tools=[list_devices, list_skills, execute_skill, execute_subtask],
     )
 
 
@@ -311,6 +390,8 @@ class LayeredTaskRun:
     cancelled: bool = False
     finished: bool = False
     context: SubtaskRunContext | None = None
+    overall_goal: str | None = None
+    overall_criteria: list[str] = field(default_factory=list)
     _tool_calls: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
     _cancel_event: asyncio.Event | None = field(default=None, init=False)
 
@@ -410,6 +491,19 @@ class LayeredTaskRun:
                         raw_event_count += 1
                         raw_data = getattr(event, "data", None)
                         raw_event_type = getattr(raw_data, "type", None)
+                        if raw_event_type == "response.completed":
+                            call_id = (
+                                self.context.planner_call_ids.pop(0)
+                                if self.context and self.context.planner_call_ids
+                                else None
+                            )
+                            record_usage(
+                                "planner",
+                                getattr(
+                                    getattr(raw_data, "response", None), "usage", None
+                                ),
+                                call_id=call_id,
+                            )
                         model_span.set_attributes(
                             {
                                 "raw_event_count": raw_event_count,
@@ -531,6 +625,28 @@ class LayeredTaskRun:
 
                 close_model_span()
                 if self.context is not None:
+                    if (
+                        not self.cancelled
+                        and self.overall_goal
+                        and self.overall_criteria
+                        and self.device_id
+                        and self.context.final_result()[0]
+                    ):
+                        acceptance = await self.context.check(
+                            self.device_id,
+                            self.overall_goal,
+                            self.overall_criteria,
+                            phase="task_final",
+                        )
+                        yield {
+                            "type": "tool_result",
+                            "payload": {
+                                "tool_name": "verify_task",
+                                "result": acceptance.model_dump(),
+                                "success": acceptance.success,
+                                "steps": 0,
+                            },
+                        }
                     # Settle writes before publishing a terminal result. A
                     # cancelled await can still leave an unknown device effect.
                     await self.context.close()
@@ -765,13 +881,14 @@ def start_run(
     session_id: str,
     message: str,
     device_id: str | None = None,
+    execution_context: SubtaskRunContext | None = None,
 ) -> LayeredTaskRun:
     agent = _ensure_agent()
     session = _get_or_create_session(session_id)
     effective_config = config_manager.get_effective_config()
     max_turns = effective_config.layered_max_turns
     resolved_max_turns = max_turns if max_turns is not None else 100000
-    context = SubtaskRunContext(
+    context = execution_context or SubtaskRunContext(
         task_id,
         session_id,
         device_id,
@@ -796,6 +913,7 @@ def start_run(
             max_turns=resolved_max_turns,
             session=session,
             context=context,
+            hooks=PlannerMetricsHooks(),
         )
 
     run = LayeredTaskRun(

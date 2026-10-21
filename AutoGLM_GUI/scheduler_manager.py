@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from threading import RLock
+from typing import Any, Self
 from uuid import uuid4
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -15,17 +16,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.models.scheduled_task import ScheduledTask
-
-if TYPE_CHECKING:
-    pass
-
-
-@dataclass
-class DeviceExecutionResult:
-    serialno: str
-    success: bool
-    message: str
-    device_model: str = ""
+from AutoGLM_GUI.skills import SkillError, SkillStorageError, skill_manager
 
 
 class SchedulerManager:
@@ -44,6 +35,7 @@ class SchedulerManager:
         self._scheduler = AsyncIOScheduler()
         self._tasks: dict[str, ScheduledTask] = {}
         self._file_mtime: float | None = None
+        self._lock = RLock()
 
     async def start(self) -> None:
         self._load_tasks()
@@ -60,66 +52,89 @@ class SchedulerManager:
     def create_task(
         self,
         name: str,
-        workflow_uuid: str,
+        skill_id: str,
+        skill_version: int,
+        parameters: dict[str, str | int | bool],
         device_serialnos: list[str] | None,
         cron_expression: str,
         enabled: bool = True,
         device_group_id: str | None = None,
-        execution_mode: str = "classic",
     ) -> ScheduledTask:
-        task = ScheduledTask(
-            name=name,
-            workflow_uuid=workflow_uuid,
-            device_serialnos=device_serialnos or [],
-            device_group_id=device_group_id,
-            cron_expression=cron_expression,
-            enabled=enabled,
-            execution_mode=execution_mode,
-        )
-        self._tasks[task.id] = task
-        self._save_tasks()
+        with self._lock:
+            skill_manager.compile_skill(skill_id, skill_version, parameters)
+            CronTrigger.from_crontab(cron_expression)
+            task = ScheduledTask(
+                name=name,
+                skill_id=skill_id,
+                skill_version=skill_version,
+                parameters=dict(parameters),
+                device_serialnos=device_serialnos or [],
+                device_group_id=device_group_id,
+                cron_expression=cron_expression,
+                enabled=enabled,
+            )
+            self._tasks[task.id] = task
+            try:
+                self._save_tasks()
+            except OSError:
+                self._tasks.pop(task.id)
+                raise
 
-        if enabled:
-            self._add_job(task)
+            if enabled:
+                self._add_job(task)
 
-        logger.info(f"Created scheduled task: {name} (id={task.id})")
-        return task
+            logger.info(f"Created scheduled task: {name} (id={task.id})")
+            return task
 
     def update_task(self, task_id: str, **kwargs: Any) -> ScheduledTask | None:
-        task = self._tasks.get(task_id)
-        if not task:
-            return None
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return None
 
-        old_enabled = task.enabled
-        old_cron = task.cron_expression
+            from AutoGLM_GUI.schemas import ScheduledTaskCreate
 
-        for key, value in kwargs.items():
-            if value is not None and hasattr(task, key):
-                setattr(task, key, value)
+            data = {key: getattr(task, key) for key in ScheduledTaskCreate.model_fields}
+            data.update(kwargs)
+            validated = ScheduledTaskCreate.model_validate(data)
+            skill_manager.compile_skill(
+                validated.skill_id, validated.skill_version, validated.parameters
+            )
+            updated = replace(
+                task,
+                **validated.model_dump(),
+                invalid_reason=None,
+                updated_at=datetime.now(tz=timezone.utc),
+            )
+            self._tasks[task_id] = updated
+            try:
+                self._save_tasks()
+            except OSError:
+                self._tasks[task_id] = task
+                raise
+            if task.enabled:
+                self._remove_job(task_id)
+            if updated.enabled:
+                self._add_job(updated)
+            task = updated
 
-        task.updated_at = datetime.now(tz=timezone.utc)
-        self._save_tasks()
-
-        if old_enabled and not task.enabled:
-            self._remove_job(task_id)
-        elif not old_enabled and task.enabled:
-            self._add_job(task)
-        elif task.enabled and old_cron != task.cron_expression:
-            self._remove_job(task_id)
-            self._add_job(task)
-
-        logger.info(f"Updated scheduled task: {task.name} (id={task_id})")
-        return task
+            logger.info(f"Updated scheduled task: {task.name} (id={task_id})")
+            return task
 
     def delete_task(self, task_id: str) -> bool:
-        task = self._tasks.pop(task_id, None)
-        if not task:
-            return False
+        with self._lock:
+            task = self._tasks.pop(task_id, None)
+            if not task:
+                return False
 
-        self._remove_job(task_id)
-        self._save_tasks()
-        logger.info(f"Deleted scheduled task: {task.name} (id={task_id})")
-        return True
+            try:
+                self._save_tasks()
+            except OSError:
+                self._tasks[task_id] = task
+                raise
+            self._remove_job(task_id)
+            logger.info(f"Deleted scheduled task: {task.name} (id={task_id})")
+            return True
 
     def list_tasks(self) -> list[ScheduledTask]:
         return list(self._tasks.values())
@@ -128,24 +143,23 @@ class SchedulerManager:
         return self._tasks.get(task_id)
 
     def set_enabled(self, task_id: str, enabled: bool) -> bool:
-        task = self._tasks.get(task_id)
-        if not task:
-            return False
-
-        if task.enabled == enabled:
+        with self._lock:
+            if task_id not in self._tasks:
+                return False
+            if enabled:
+                self.update_task(task_id, enabled=True)
+            else:
+                task = self._tasks[task_id]
+                self._tasks[task_id] = replace(
+                    task, enabled=False, updated_at=datetime.now(tz=timezone.utc)
+                )
+                try:
+                    self._save_tasks()
+                except OSError:
+                    self._tasks[task_id] = task
+                    raise
+                self._remove_job(task_id)
             return True
-
-        task.enabled = enabled
-        task.updated_at = datetime.now(tz=timezone.utc)
-        self._save_tasks()
-
-        if enabled:
-            self._add_job(task)
-        else:
-            self._remove_job(task_id)
-
-        logger.info(f"{'Enabled' if enabled else 'Disabled'} task: {task.name}")
-        return True
 
     def get_next_run_time(self, task_id: str) -> datetime | None:
         job = self._scheduler.get_job(task_id)
@@ -154,6 +168,8 @@ class SchedulerManager:
         return None
 
     def _add_job(self, task: ScheduledTask) -> None:
+        if task.invalid_reason:
+            return
         try:
             parts = task.cron_expression.split()
             if len(parts) != 5:
@@ -186,140 +202,6 @@ class SchedulerManager:
                 logger.debug(f"Removed job: {task_id}")
         except Exception as e:
             logger.warning(f"Failed to remove job {task_id}: {e}")
-
-    async def _execute_single_device(
-        self,
-        serialno: str,
-        workflow: dict[str, Any],
-        task_name: str,
-        manager: Any,
-        device_manager: Any,
-        history_manager: Any,
-    ) -> DeviceExecutionResult:
-        from AutoGLM_GUI.models.history import ConversationRecord, MessageRecord
-
-        device = None
-        for d in device_manager.get_devices():
-            if d.serial == serialno and d.state.value == "online":
-                device = d
-                break
-
-        if not device:
-            return DeviceExecutionResult(
-                serialno=serialno,
-                success=False,
-                message="Device offline",
-                device_model="",
-            )
-
-        acquired = await manager.acquire_device_async(
-            device.primary_device_id,
-            timeout=0,
-            raise_on_timeout=False,
-            auto_initialize=True,
-        )
-
-        if not acquired:
-            return DeviceExecutionResult(
-                serialno=serialno,
-                success=False,
-                message="Device busy",
-                device_model=device.model or serialno,
-            )
-
-        start_time = datetime.now(tz=timezone.utc)
-        messages: list[MessageRecord] = [
-            MessageRecord(
-                role="user",
-                content=workflow["text"],
-                timestamp=start_time,
-            )
-        ]
-
-        result_message = ""
-        task_success = False
-
-        try:
-            agent: Any = await manager.get_agent_async(device.primary_device_id)
-            agent.reset()
-
-            async for event in agent.stream(workflow["text"]):
-                step_data: dict[str, Any] = event.get("data", {})
-                if event["type"] == "step":
-                    messages.append(
-                        MessageRecord(
-                            role="assistant",
-                            content="",
-                            timestamp=datetime.now(tz=timezone.utc),
-                            thinking=step_data.get("thinking", ""),
-                            action=step_data.get("action", {}),
-                            step=step_data.get("step", 0),
-                        )
-                    )
-                elif event["type"] == "done":
-                    result_message = step_data.get("message", "Task completed")
-                    task_success = step_data.get("success", False)
-                    break
-                elif event["type"] == "error":
-                    result_message = step_data.get("message", "Task failed")
-                    task_success = False
-                    break
-
-            steps = agent.step_count
-            end_time = datetime.now(tz=timezone.utc)
-            device_model = device.model or serialno
-
-            record = ConversationRecord(
-                task_text=workflow["text"],
-                final_message=result_message,
-                success=task_success,
-                steps=steps,
-                start_time=start_time,
-                end_time=end_time,
-                duration_ms=int((end_time - start_time).total_seconds() * 1000),
-                source="scheduled",
-                source_detail=f"{task_name} [{device_model}]",
-                error_message=None if task_success else result_message,
-                messages=messages,
-            )
-            await asyncio.to_thread(history_manager.add_record, serialno, record)
-
-            return DeviceExecutionResult(
-                serialno=serialno,
-                success=task_success,
-                message=result_message,
-                device_model=device_model,
-            )
-
-        except Exception as e:
-            end_time = datetime.now(tz=timezone.utc)
-            error_msg = str(e)
-            device_model = device.model or serialno
-
-            record = ConversationRecord(
-                task_text=workflow["text"],
-                final_message=error_msg,
-                success=False,
-                steps=0,
-                start_time=start_time,
-                end_time=end_time,
-                duration_ms=int((end_time - start_time).total_seconds() * 1000),
-                source="scheduled",
-                source_detail=f"{task_name} [{device_model}]",
-                error_message=error_msg,
-                messages=messages,
-            )
-            await asyncio.to_thread(history_manager.add_record, serialno, record)
-
-            return DeviceExecutionResult(
-                serialno=serialno,
-                success=False,
-                message=error_msg,
-                device_model=device_model,
-            )
-
-        finally:
-            await manager.release_device_async(device.primary_device_id)
 
     def _resolve_device_serialnos(self, task: ScheduledTask) -> list[str]:
         """解析任务的目标设备列表.
@@ -358,6 +240,9 @@ class SchedulerManager:
             logger.warning(f"Task {task_id} not found for execution")
             return
 
+        if not task.enabled:
+            return
+
         # 解析目标设备列表
         device_serialnos = self._resolve_device_serialnos(task)
 
@@ -368,14 +253,18 @@ class SchedulerManager:
         from AutoGLM_GUI.device_manager import DeviceManager
         from AutoGLM_GUI.task_manager import task_manager
         from AutoGLM_GUI.task_store import TaskStatus, task_store
-        from AutoGLM_GUI.workflow_manager import workflow_manager
 
-        workflow = workflow_manager.get_workflow(task.workflow_uuid)
-        if not workflow:
+        try:
+            if task.invalid_reason:
+                raise SkillError(task.invalid_reason)
+            compiled = skill_manager.compile_skill(
+                task.skill_id, task.skill_version, task.parameters
+            )
+        except (SkillError, SkillStorageError) as exc:
             self._record_run(
                 task=task,
                 status="failure",
-                message="Workflow not found",
+                message=str(exc),
                 success_count=0,
                 total_count=len(device_serialnos),
             )
@@ -402,11 +291,7 @@ class SchedulerManager:
 
         schedule_fire_id = str(uuid4())
         created_count = 0
-        executor_key = (
-            "scheduled_layered_workflow"
-            if task.execution_mode == "layered"
-            else "scheduled_workflow"
-        )
+        executor_key = "scheduled_skill"
         for serialno in device_serialnos:
             device = online_devices.get(serialno)
             if device is None:
@@ -415,12 +300,23 @@ class SchedulerManager:
                     task_store.create_task_run,
                     source="scheduled",
                     executor_key=executor_key,
+                    status=TaskStatus.FAILED.value,
                     scheduled_task_id=task.id,
-                    workflow_uuid=task.workflow_uuid,
                     schedule_fire_id=schedule_fire_id,
                     device_id=serialno,
                     device_serial=serialno,
-                    input_text=workflow["text"],
+                    input_text=compiled.goal,
+                    user_message={
+                        "message": compiled.goal,
+                        "execution": {
+                            "route": "skill",
+                            "skill_id": task.skill_id,
+                            "skill_version": task.skill_version,
+                            "parameters": task.parameters,
+                            "max_steps": compiled.max_steps,
+                            "max_seconds": compiled.max_seconds,
+                        },
+                    },
                 )
                 await asyncio.to_thread(
                     task_store.append_event,
@@ -443,12 +339,15 @@ class SchedulerManager:
 
             await task_manager.enqueue_scheduled_task(
                 scheduled_task_id=task.id,
-                workflow_uuid=task.workflow_uuid,
+                skill_id=task.skill_id,
+                skill_version=task.skill_version,
+                parameters=task.parameters,
                 device_id=device.primary_device_id,
                 device_serial=device.serial,
-                input_text=workflow["text"],
+                input_text=compiled.goal,
                 schedule_fire_id=schedule_fire_id,
-                executor_key=executor_key,
+                max_steps=compiled.max_steps,
+                max_seconds=compiled.max_seconds,
             )
             created_count += 1
 
@@ -474,19 +373,20 @@ class SchedulerManager:
         success_count: int,
         total_count: int,
     ) -> None:
-        task.last_run_time = datetime.now(tz=timezone.utc)
-        task.last_run_status = status
-        task.last_run_success = status == "success"
-        task.last_run_success_count = success_count
-        task.last_run_total_count = total_count
-        task.last_run_message = message[:500] if message else ""
-        self._save_tasks()
-        if status == "success":
-            logger.info(f"Scheduled task completed: {task.name}")
-        elif status == "partial":
-            logger.warning(f"Scheduled task partially succeeded: {task.name}")
-        else:
-            logger.warning(f"Scheduled task failed: {task.name} - {message}")
+        with self._lock:
+            task.last_run_time = datetime.now(tz=timezone.utc)
+            task.last_run_status = status
+            task.last_run_success = status == "success"
+            task.last_run_success_count = success_count
+            task.last_run_total_count = total_count
+            task.last_run_message = message[:500] if message else ""
+            self._save_tasks()
+            if status == "success":
+                logger.info(f"Scheduled task completed: {task.name}")
+            elif status == "partial":
+                logger.warning(f"Scheduled task partially succeeded: {task.name}")
+            else:
+                logger.warning(f"Scheduled task failed: {task.name} - {message}")
 
     def _load_tasks(self) -> None:
         if not self._tasks_path.exists():
@@ -495,8 +395,30 @@ class SchedulerManager:
         try:
             with open(self._tasks_path, encoding="utf-8") as f:
                 data = json.load(f)
-            tasks_data = data.get("tasks", [])
-            self._tasks = {t["id"]: ScheduledTask.from_dict(t) for t in tasks_data}
+            if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
+                raise ValueError("Invalid scheduled task file")
+            tasks_data = data["tasks"]
+            loaded: dict[str, ScheduledTask] = {}
+            for record in tasks_data:
+                task = ScheduledTask.from_dict(record)
+                if not task.invalid_reason:
+                    try:
+                        from AutoGLM_GUI.schemas import ScheduledTaskCreate
+
+                        ScheduledTaskCreate.model_validate(
+                            {
+                                key: getattr(task, key)
+                                for key in ScheduledTaskCreate.model_fields
+                            }
+                        )
+                        skill_manager.compile_skill(
+                            task.skill_id, task.skill_version, task.parameters
+                        )
+                    except (ValueError, SkillStorageError) as exc:
+                        task.enabled = False
+                        task.invalid_reason = str(exc)
+                loaded[task.id] = task
+            self._tasks = loaded
             self._file_mtime = self._tasks_path.stat().st_mtime
             logger.debug(f"Loaded {len(self._tasks)} scheduled tasks")
         except Exception as e:
@@ -507,6 +429,18 @@ class SchedulerManager:
         temp_path = self._tasks_path.with_suffix(".tmp")
 
         try:
+            if self._tasks_path.exists():
+                original = self._tasks_path.read_text(encoding="utf-8")
+                parsed = json.loads(original)
+                if not isinstance(parsed, dict) or not isinstance(
+                    parsed.get("tasks"), list
+                ):
+                    raise ValueError("Invalid scheduled task file")
+                if any("workflow_uuid" in item for item in parsed["tasks"]):
+                    backup = self._tasks_path.with_suffix(".legacy.json")
+                    if not backup.exists():
+                        with backup.open("x", encoding="utf-8") as handle:
+                            handle.write(original)
             data = {"tasks": [t.to_dict() for t in self._tasks.values()]}
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -517,6 +451,7 @@ class SchedulerManager:
             logger.error(f"Failed to save scheduled tasks: {e}")
             if temp_path.exists():
                 temp_path.unlink()
+            raise OSError("Scheduled task storage could not be saved") from e
 
 
 scheduler_manager = SchedulerManager()

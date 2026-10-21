@@ -67,7 +67,7 @@ AutoGLM-GUI 本身不含模型，需要你提供一个 OpenAI 兼容的模型服
 
 ## 接下来
 
-- 把常用任务存成一键复用的[Workflow](../guide/use-workflow.md)
+- 把常用任务定义为带参数和完成条件的[技能](../guide/use-skills.md)
 - 让任务[定时自动执行](../guide/schedule-task.md)
 - 任务跑偏时随时[打断](../guide/interrupt.md)
 - 了解自动规划与直接执行的[区别](../explanation/modes.md)

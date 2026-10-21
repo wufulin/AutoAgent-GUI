@@ -76,19 +76,19 @@ sidebar_position: 3
 | POST | `/api/screenshot` | 截图 |
 | POST | `/api/video/reset` | 重置视频流 |
 
-## Workflow
+## 技能
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET/POST | `/api/workflows` | 列出 / 创建 |
-| GET/PUT/DELETE | `/api/workflows/{workflow_uuid}` | 获取 / 编辑 / 删除 |
+| GET/POST | `/api/skills` | 列出 / 创建 |
+| GET/PUT/DELETE | `/api/skills/{skill_id}` | 获取 / 追加新版本 / 删除（expected_version 并发校验） |
 
 ## 定时任务
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET/POST | `/api/scheduled-tasks` | 列出 / 创建 |
-| GET/PUT/DELETE | `/api/scheduled-tasks/{task_id}` | 获取 / 编辑 / 删除 |
+| GET/PUT/DELETE | `/api/scheduled-tasks/{task_id}` | 获取 / 追加新版本 / 删除（expected_version 并发校验） |
 | POST | `/api/scheduled-tasks/{task_id}/enable` · `/disable` | 启用 / 禁用 |
 
 ## 历史
@@ -121,3 +121,5 @@ sidebar_position: 3
 | WebSocket | `/api/terminal/sessions/{session_id}/stream` | 终端双向数据流 |
 | — | `/mcp` | [MCP 服务端点](./mcp-tools.md) |
 | — | `/socket.io` | Socket.IO 实时通道（设备状态、视频流等） |
+
+技能定义包含参数、前置条件、步骤与最终完成条件。`GET /api/skills/{skill_id}?version=N` 可读取固定版本。任务提交支持 `execution.route=auto/direct/planner/skill`；skill 需要 skill_id、skill_version、parameters，direct 需要 success_criteria。旧 Workflow API 已移除，旧定时任务必须重新配置技能。

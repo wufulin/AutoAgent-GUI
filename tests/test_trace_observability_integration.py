@@ -14,6 +14,7 @@ from prometheus_client import generate_latest
 
 import AutoGLM_GUI.api.history as history_api
 import AutoGLM_GUI.layered_agent_service as layered_service
+import AutoGLM_GUI.execution as execution_service
 from AutoGLM_GUI.actions import ActionHandler
 from AutoGLM_GUI.devices.adb_device import ADBDevice
 from AutoGLM_GUI.metrics import get_metrics_registry, reset_trace_latency_metrics
@@ -222,6 +223,7 @@ def test_layered_task_trace_observability_covers_debug_surface(
         session_id: str,
         message: str,
         device_id: str | None = None,
+        execution=None,
     ) -> layered_service.LayeredTaskRun:
         assert message == "打开微信，搜索张三，发送你好"
         with trace_span(
@@ -244,7 +246,7 @@ def test_layered_task_trace_observability_covers_debug_surface(
                 context=context,
             )
 
-    monkeypatch.setattr(layered_service, "start_run", fake_start_run)
+    monkeypatch.setattr(execution_service, "start_run", fake_start_run)
     monkeypatch.setattr(history_api, "task_store", store)
 
     async def scenario() -> dict[str, Any]:

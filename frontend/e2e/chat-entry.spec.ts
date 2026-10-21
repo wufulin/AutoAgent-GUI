@@ -143,7 +143,7 @@ entryTest(
 );
 
 entryTest(
-  'guides vision-only users to planner setup or direct execution',
+  'allows verified direct execution without a planner model',
   async ({ page, chatUrl }) => {
     await page.route('**/api/config', async route => {
       if (route.request().method() !== 'GET') return route.continue();
@@ -154,22 +154,12 @@ entryTest(
       });
     });
     await page.goto(chatUrl);
-    await expect(
-      page.getByRole('heading', { name: '配置决策模型以开始使用' })
-    ).toBeVisible();
-    await expect(page.locator('textarea')).toHaveCount(0);
-    await page
-      .getByRole('button', { name: '配置决策模型', exact: true })
-      .click();
-    await expect(
-      page.getByRole('tab', { name: '决策模型', exact: true })
-    ).toHaveAttribute('data-state', 'active');
-    await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: '高级设置', exact: true }).click();
-    await page.getByLabel('聊天执行方式').selectOption('classic');
-    await page.getByRole('button', { name: '保存配置', exact: true }).click();
-    await expect(page).toHaveURL(/mode=classic/);
-    await expect(page.locator('textarea')).toBeVisible();
+    await expect(page.getByLabel('执行方式', { exact: true })).toHaveValue(
+      'direct'
+    );
+    await expect(page.getByLabel('最终完成条件（每行一项）')).toBeVisible();
+    await page.getByLabel('执行方式', { exact: true }).selectOption('skill');
+    await expect(page.getByLabel('选择技能', { exact: true })).toBeVisible();
   }
 );
 

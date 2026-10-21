@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -306,11 +305,12 @@ def test_scheduler_crud_persistence_jobs_and_resolution(
 ) -> None:
     task = scheduler.create_task(
         "Morning",
-        "wf-1",
+        "open_wechat",
+        1,
+        {},
         ["serial-1"],
         "0 8 * * *",
         enabled=True,
-        execution_mode="classic",
     )
     assert task.id in scheduler._scheduler.jobs
     assert scheduler.get_task(task.id) is task
@@ -327,7 +327,7 @@ def test_scheduler_crud_persistence_jobs_and_resolution(
     assert scheduler.update_task("missing", name="x") is None
 
     scheduler._add_job(
-        ScheduledTask(name="Bad", workflow_uuid="wf", cron_expression="bad")
+        ScheduledTask(name="Bad", skill_id="open_wechat", cron_expression="bad")
     )
     scheduler._scheduler.get_job = lambda task_id: (_ for _ in ()).throw(
         RuntimeError("job failed")
@@ -341,6 +341,9 @@ def test_scheduler_crud_persistence_jobs_and_resolution(
     scheduler._tasks_path.write_text("{bad", encoding="utf-8")
     scheduler._load_tasks()
 
+    with pytest.raises(OSError):
+        scheduler.delete_task(task.id)
+    scheduler._tasks_path.unlink()
     assert scheduler.delete_task(task.id) is True
     assert scheduler.delete_task(task.id) is False
 
@@ -370,122 +373,11 @@ def test_scheduler_crud_persistence_jobs_and_resolution(
         classmethod(lambda cls: FakeDeviceManager()),
     )
     assert scheduler._resolve_device_serialnos(
-        ScheduledTask(name="Default", workflow_uuid="wf", device_group_id="default")
+        ScheduledTask(name="Default", skill_id="open_wechat", device_group_id="default")
     ) == ["default-1"]
     assert scheduler._resolve_device_serialnos(
-        ScheduledTask(name="Group", workflow_uuid="wf", device_group_id="g")
+        ScheduledTask(name="Group", skill_id="open_wechat", device_group_id="g")
     ) == ["grouped"]
-
-
-def test_scheduler_single_device_execution_paths(scheduler: SchedulerManager) -> None:
-    online_device = SimpleNamespace(
-        serial="serial-1",
-        state=SimpleNamespace(value="online"),
-        primary_device_id="device-1",
-        model="Pixel",
-    )
-
-    class FakeDeviceManager:
-        @staticmethod
-        def get_devices():
-            return [online_device]
-
-    class FakeAgent:
-        step_count = 1
-
-        def reset(self) -> None:
-            self.reset_called = True
-
-        async def stream(self, text):
-            yield {
-                "type": "step",
-                "data": {"thinking": "think", "action": {"action": "Tap"}, "step": 1},
-            }
-            yield {"type": "done", "data": {"message": "done", "success": True}}
-
-    class FakePhoneManager:
-        def __init__(self, acquired: bool = True, fail_stream: bool = False) -> None:
-            self.acquired = acquired
-            self.fail_stream = fail_stream
-            self.released: list[str] = []
-
-        async def acquire_device_async(self, *args, **kwargs):
-            return self.acquired
-
-        def get_agent(self, device_id: str):
-            if self.fail_stream:
-                raise RuntimeError("agent failed")
-            return FakeAgent()
-
-        async def get_agent_async(self, device_id: str):
-            return self.get_agent(device_id)
-
-        def release_device(self, device_id: str) -> None:
-            self.released.append(device_id)
-
-        async def release_device_async(self, device_id: str) -> None:
-            self.release_device(device_id)
-
-    class FakeHistory:
-        def __init__(self) -> None:
-            self.records = []
-
-        def add_record(self, serialno, record) -> None:
-            self.records.append((serialno, record))
-
-    history = FakeHistory()
-    manager = FakePhoneManager()
-    result = asyncio.run(
-        scheduler._execute_single_device(
-            "serial-1",
-            {"text": "do it"},
-            "Morning",
-            manager,
-            FakeDeviceManager(),
-            history,
-        )
-    )
-    assert result.success is True
-    assert result.device_model == "Pixel"
-    assert manager.released == ["device-1"]
-    assert history.records[0][1].messages[-1].action == {"action": "Tap"}
-
-    busy = asyncio.run(
-        scheduler._execute_single_device(
-            "serial-1",
-            {"text": "do it"},
-            "Morning",
-            FakePhoneManager(acquired=False),
-            FakeDeviceManager(),
-            history,
-        )
-    )
-    assert busy.message == "Device busy"
-
-    offline = asyncio.run(
-        scheduler._execute_single_device(
-            "missing",
-            {"text": "do it"},
-            "Morning",
-            FakePhoneManager(),
-            FakeDeviceManager(),
-            history,
-        )
-    )
-    assert offline.message == "Device offline"
-
-    failed = asyncio.run(
-        scheduler._execute_single_device(
-            "serial-1",
-            {"text": "do it"},
-            "Morning",
-            FakePhoneManager(fail_stream=True),
-            FakeDeviceManager(),
-            history,
-        )
-    )
-    assert failed.success is False
-    assert failed.message == "agent failed"
 
 
 def test_main_entry_success_error_and_browser_paths(

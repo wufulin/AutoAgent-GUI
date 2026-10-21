@@ -7,14 +7,19 @@ import {
   deleteScheduledTask,
   enableScheduledTask,
   disableScheduledTask,
-  listWorkflows,
+  listSkills,
+  getSkill,
   getDevices,
   listDeviceGroups,
   type ScheduledTaskResponse,
-  type Workflow,
+  type SkillDefinition,
   type Device,
+  type SkillValue,
+  getErrorMessage,
   type DeviceGroup,
 } from '../api';
+import { SkillParameters } from '../components/SkillParameters';
+import { skillDefaults, validSkillParameters } from '../lib/skills';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -63,12 +68,13 @@ export const Route = createFileRoute('/scheduled-tasks')({
 
 interface TaskFormData {
   name: string;
-  workflow_uuid: string;
+  skill_id: string;
+  skill_version: number;
+  parameters: Record<string, SkillValue>;
   device_serialnos: string[];
   device_group_id: string | null;
   cron_expression: string;
   enabled: boolean;
-  execution_mode: 'classic' | 'layered';
 }
 
 type DeviceSelectionMode = 'devices' | 'group';
@@ -84,7 +90,7 @@ const cronPresets = [
 export function ScheduledTasksComponent() {
   const t = useTranslation();
   const [tasks, setTasks] = useState<ScheduledTaskResponse[]>([]);
-  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [skills, setSkills] = useState<SkillDefinition[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [groups, setGroups] = useState<DeviceGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -94,35 +100,60 @@ export function ScheduledTasksComponent() {
   );
   const [formData, setFormData] = useState<TaskFormData>({
     name: '',
-    workflow_uuid: '',
+    skill_id: '',
+    skill_version: 1,
+    parameters: {},
     device_serialnos: [],
     device_group_id: null,
     cron_expression: '',
     enabled: true,
-    execution_mode: 'classic',
   });
   const [deviceSelectionMode, setDeviceSelectionMode] =
     useState<DeviceSelectionMode>('devices');
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const [tasksData, workflowsData, devicesData, groupsData] =
+      const [tasksData, skillsData, devicesData, groupsData] =
         await Promise.all([
           listScheduledTasks(),
-          listWorkflows(),
+          listSkills(),
           getDevices(),
           listDeviceGroups(),
         ]);
       setTasks(tasksData.tasks);
-      setWorkflows(workflowsData.workflows);
+      const missing = new Map(
+        tasksData.tasks
+          .filter(
+            task =>
+              task.skill_id &&
+              !skillsData.skills.some(
+                skill =>
+                  skill.id === task.skill_id &&
+                  skill.version === task.skill_version
+              )
+          )
+          .map(task => [`${task.skill_id}@${task.skill_version}`, task])
+      );
+      const pinned = await Promise.allSettled(
+        Array.from(missing.values()).map(task =>
+          getSkill(task.skill_id, task.skill_version)
+        )
+      );
+      setSkills([
+        ...skillsData.skills,
+        ...pinned.flatMap(result =>
+          result.status === 'fulfilled' ? [result.value] : []
+        ),
+      ]);
       setDevices(devicesData);
       setGroups(groupsData.groups);
     } catch (error) {
-      console.error('Failed to load data:', error);
+      setError(getErrorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -139,12 +170,13 @@ export function ScheduledTasksComponent() {
     setEditingTask(null);
     setFormData({
       name: '',
-      workflow_uuid: '',
+      skill_id: '',
+      skill_version: 1,
+      parameters: {},
       device_serialnos: [],
       device_group_id: null,
       cron_expression: '',
       enabled: true,
-      execution_mode: 'classic',
     });
     setDeviceSelectionMode('devices');
     setShowDialog(true);
@@ -154,12 +186,13 @@ export function ScheduledTasksComponent() {
     setEditingTask(task);
     setFormData({
       name: task.name,
-      workflow_uuid: task.workflow_uuid,
+      skill_id: task.skill_id,
+      skill_version: task.skill_version,
+      parameters: task.parameters,
       device_serialnos: task.device_serialnos,
       device_group_id: task.device_group_id || null,
       cron_expression: task.cron_expression,
       enabled: task.enabled,
-      execution_mode: task.execution_mode,
     });
     // Determine selection mode based on existing data
     setDeviceSelectionMode(task.device_group_id ? 'group' : 'devices');
@@ -168,14 +201,16 @@ export function ScheduledTasksComponent() {
 
   const handleSave = async () => {
     try {
+      setError(null);
       setSaving(true);
       // Prepare data based on selection mode
       const saveData = {
         name: formData.name,
-        workflow_uuid: formData.workflow_uuid,
+        skill_id: formData.skill_id,
+        skill_version: formData.skill_version,
+        parameters: formData.parameters,
         cron_expression: formData.cron_expression,
         enabled: formData.enabled,
-        execution_mode: formData.execution_mode,
         device_serialnos:
           deviceSelectionMode === 'devices' ? formData.device_serialnos : null,
         device_group_id:
@@ -190,7 +225,7 @@ export function ScheduledTasksComponent() {
       setShowDialog(false);
       loadData();
     } catch (error) {
-      console.error('Failed to save task:', error);
+      setError(getErrorMessage(error));
     } finally {
       setSaving(false);
     }
@@ -217,13 +252,13 @@ export function ScheduledTasksComponent() {
       }
       loadData();
     } catch (error) {
-      console.error('Failed to toggle task:', error);
+      setError(getErrorMessage(error));
     }
   };
 
-  const getWorkflowName = (uuid: string): string => {
-    const workflow = workflows.find(w => w.uuid === uuid);
-    return workflow?.name || uuid;
+  const getSkillName = (uuid: string): string => {
+    const skill = skills.find(w => w.id === uuid);
+    return skill?.name || uuid;
   };
 
   const getDeviceName = (serialno: string): string => {
@@ -278,9 +313,17 @@ export function ScheduledTasksComponent() {
     return null;
   };
 
+  const selectedSkill = skills.find(
+    skill =>
+      skill.id === formData.skill_id &&
+      skill.version === formData.skill_version &&
+      skill.enabled
+  );
   const isFormValid =
+    selectedSkill &&
+    validSkillParameters(selectedSkill, formData.parameters) &&
     formData.name.trim() &&
-    formData.workflow_uuid &&
+    formData.skill_id &&
     ((deviceSelectionMode === 'devices' &&
       formData.device_serialnos.length > 0) ||
       (deviceSelectionMode === 'group' && formData.device_group_id)) &&
@@ -297,6 +340,11 @@ export function ScheduledTasksComponent() {
         </Button>
       </div>
 
+      {error && (
+        <p role="alert" className="mb-4 text-sm text-red-600">
+          {error}
+        </p>
+      )}
       {/* Content */}
       {loading ? (
         <div className="flex justify-center items-center h-64">
@@ -328,13 +376,13 @@ export function ScheduledTasksComponent() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
-                  {/* Workflow */}
+                  {/* SkillDefinition */}
                   <div className="text-sm">
                     <span className="text-slate-500 dark:text-slate-400">
-                      {t.scheduledTasks.workflow}:{' '}
+                      {t.scheduledTasks.skill}:{' '}
                     </span>
                     <span className="font-medium">
-                      {getWorkflowName(task.workflow_uuid)}
+                      {getSkillName(task.skill_id)} · v{task.skill_version}
                     </span>
                   </div>
 
@@ -360,17 +408,11 @@ export function ScheduledTasksComponent() {
                     </span>
                   </div>
 
-                  {/* Cron */}
-                  <div className="text-sm">
-                    <span className="text-slate-500 dark:text-slate-400">
-                      {t.scheduledTasks.executionMode}:{' '}
-                    </span>
-                    <Badge variant="secondary" className="capitalize">
-                      {task.execution_mode === 'layered'
-                        ? t.scheduledTasks.executionModeOption.layered
-                        : t.scheduledTasks.executionModeOption.classic}
-                    </Badge>
-                  </div>
+                  {task.invalid_reason && (
+                    <p className="text-xs text-amber-600">
+                      {t.skills.scheduleInvalid} {task.invalid_reason}
+                    </p>
+                  )}
 
                   <div className="text-sm">
                     <Badge variant="outline" className="font-mono">
@@ -471,59 +513,61 @@ export function ScheduledTasksComponent() {
               />
             </div>
 
-            {/* Workflow */}
+            {error && (
+              <p role="alert" className="text-sm text-red-600">
+                {error}
+              </p>
+            )}
             <div className="space-y-2">
-              <Label>{t.scheduledTasks.workflow}</Label>
-              {workflows.length === 0 ? (
-                <p className="text-sm text-amber-600 dark:text-amber-400">
-                  {t.scheduledTasks.noWorkflows}
-                </p>
-              ) : (
-                <Select
-                  value={formData.workflow_uuid}
-                  onValueChange={(value: string) =>
-                    setFormData(prev => ({ ...prev, workflow_uuid: value }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue
-                      placeholder={t.scheduledTasks.selectWorkflow}
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {workflows.map(workflow => (
-                      <SelectItem key={workflow.uuid} value={workflow.uuid}>
-                        {workflow.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label>{t.scheduledTasks.executionMode}</Label>
-              <Select
-                value={formData.execution_mode}
-                onValueChange={value =>
-                  setFormData(prev => ({
-                    ...prev,
-                    execution_mode: value === 'layered' ? 'layered' : 'classic',
-                  }))
+              <Label htmlFor="scheduled-skill">{t.skills.select}</Label>
+              <select
+                id="scheduled-skill"
+                className="w-full rounded-md border bg-background p-2 text-sm"
+                value={
+                  selectedSkill
+                    ? `${selectedSkill.id}@${selectedSkill.version}`
+                    : ''
                 }
+                onChange={event => {
+                  const selected = skills.find(
+                    item => `${item.id}@${item.version}` === event.target.value
+                  );
+                  if (selected)
+                    setFormData(prev => ({
+                      ...prev,
+                      skill_id: selected.id,
+                      skill_version: selected.version,
+                      parameters: skillDefaults(selected),
+                    }));
+                }}
               >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="classic">
-                    {t.scheduledTasks.executionModeOption.classic}
-                  </SelectItem>
-                  <SelectItem value="layered">
-                    {t.scheduledTasks.executionModeOption.layered}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+                <option value="">{t.skills.select}</option>
+                {skills
+                  .filter(item => item.enabled)
+                  .map(item => (
+                    <option
+                      key={`${item.id}@${item.version}`}
+                      value={`${item.id}@${item.version}`}
+                    >
+                      {item.name} · v{item.version}
+                    </option>
+                  ))}
+              </select>
+              {formData.skill_id && !selectedSkill && (
+                <p className="text-xs text-amber-600">
+                  {t.skills.skillUnavailable} ({t.skills.pinnedVersion}: v
+                  {formData.skill_version})
+                </p>
+              )}
+              {selectedSkill && (
+                <SkillParameters
+                  skill={selectedSkill}
+                  values={formData.parameters}
+                  onChange={parameters =>
+                    setFormData(prev => ({ ...prev, parameters }))
+                  }
+                />
+              )}
             </div>
 
             <div className="space-y-2">

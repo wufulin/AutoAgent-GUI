@@ -18,6 +18,7 @@ import AutoGLM_GUI.agents as agents_module
 import AutoGLM_GUI.agents.factory as factory
 import AutoGLM_GUI.config_manager as config_manager_module
 import AutoGLM_GUI.device_manager as device_manager_module
+import AutoGLM_GUI.execution as execution_module
 import AutoGLM_GUI.layered_agent_service as layered_agent_service
 import AutoGLM_GUI.trace as trace_module
 from AutoGLM_GUI.config import AgentConfig, ModelConfig
@@ -459,7 +460,7 @@ def test_task_manager_queue_cancel_worker_and_layered(
 
     reset_calls: list[str] = []
     monkeypatch.setattr(
-        layered_agent_service, "start_run", lambda **kwargs: FakeLayeredRun()
+        execution_module, "start_run", lambda **kwargs: FakeLayeredRun()
     )
     monkeypatch.setattr(
         layered_agent_service,
@@ -474,12 +475,12 @@ def test_task_manager_queue_cancel_worker_and_layered(
 
     layered_task = store.create_task_run(
         source="scheduled",
-        executor_key="scheduled_layered_workflow",
+        executor_key="scheduled_skill",
         device_id="device-1",
         device_serial="serial-1",
         input_text="layered",
     )
-    asyncio.run(manager._execute_scheduled_layered_workflow(layered_task))
+    asyncio.run(manager._execute_scheduled_skill(layered_task))
     assert store.get_task(layered_task["id"])["status"] == TaskStatus.SUCCEEDED.value
     assert reset_calls == [layered_task["id"]]
     store.close()
@@ -641,109 +642,132 @@ def test_task_manager_classic_chat_resumes_takeover_session(
     store.close()
 
 
-def test_task_manager_scheduled_workflow_success_cancel_and_errors(
+def test_task_manager_scheduled_skill_success_cancel_and_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from unittest.mock import AsyncMock
+
     _patch_task_tracing(monkeypatch)
     store = TaskStore(tmp_path / "scheduled.db")
     manager = TaskManager(store)
     monkeypatch.setattr(manager, "_ensure_worker", lambda device_id: None)
+    reset_calls: list[str] = []
+    monkeypatch.setattr(layered_agent_service, "reset_session", reset_calls.append)
+    requests: list[dict[str, Any]] = []
+    runs = []
 
-    fake_agent = FakeAgent()
-    fake_phone_manager = FakePhoneAgentManager(fake_agent)
-    monkeypatch.setattr(
-        PhoneAgentManager,
-        "get_instance",
-        classmethod(lambda cls: fake_phone_manager),
-    )
+    class FakeSkillRun:
+        final_output = ""
 
-    scheduled = asyncio.run(
-        manager.enqueue_scheduled_task(
+        def __init__(self, message: str) -> None:
+            self.message = message
+            self.cancelled = False
+            self.action_calls = 0
+            self.context = SimpleNamespace(
+                total_steps=0, fatal_result=None, close=AsyncMock()
+            )
+
+        async def cancel(self) -> None:
+            self.cancelled = True
+
+        async def stream_events(self):
+            if self.cancelled:
+                yield {
+                    "type": "cancelled",
+                    "payload": {"message": "stopped", "stop_reason": "user_stopped"},
+                }
+                return
+            if self.message == "busy":
+                yield {
+                    "type": "done",
+                    "payload": {
+                        "content": "Device busy",
+                        "success": False,
+                        "stop_reason": "device_busy",
+                    },
+                }
+                return
+            self.action_calls += 1
+            self.context.total_steps = 3
+            yield {"type": "tool_result", "payload": {"steps": 3}}
+            yield {
+                "type": "done",
+                "payload": {
+                    "content": "skill complete",
+                    "success": True,
+                    "stop_reason": "goal_verified",
+                },
+            }
+
+    def start_run(**kwargs):
+        requests.append(kwargs)
+        if kwargs["message"] == "init":
+            raise AgentInitializationError("missing config")
+        run = FakeSkillRun(kwargs["message"])
+        runs.append(run)
+        return run
+
+    monkeypatch.setattr(execution_module, "start_run", start_run)
+
+    async def enqueue(message: str):
+        return await manager.enqueue_scheduled_task(
             scheduled_task_id="sched-1",
-            workflow_uuid="workflow-1",
+            skill_id="open_wechat_chat",
+            skill_version=7,
+            parameters={"contact_name": "张三"},
             schedule_fire_id="fire-1",
             device_id="device-1",
             device_serial="serial-1",
-            input_text="scheduled task",
+            input_text=message,
         )
+
+    scheduled = asyncio.run(enqueue("scheduled task"))
+    assert scheduled["executor_key"] == "scheduled_skill"
+    initial_events = store.list_task_events(scheduled["id"])
+    execution_request = next(
+        event["payload"]["execution"]
+        for event in initial_events
+        if event["event_type"] == "user_message"
     )
-    task = store.get_task(scheduled["id"])
-    assert task is not None
+    assert execution_request["route"] == "skill"
+    assert execution_request["skill_id"] == "open_wechat_chat"
+    assert execution_request["skill_version"] == 7
+    assert execution_request["parameters"] == {"contact_name": "张三"}
+    asyncio.run(manager._execute_scheduled_skill(scheduled))
+    completed = store.get_task(scheduled["id"])
+    assert completed is not None and completed["status"] == TaskStatus.SUCCEEDED.value
+    assert completed["final_message"] == "skill complete"
+    assert completed["step_count"] == 3
+    assert requests[0]["execution"] == execution_request
+    assert requests[0]["session_id"] == scheduled["id"]
+    runs[0].context.close.assert_awaited_once()
 
-    asyncio.run(manager._execute_scheduled_workflow(task))
-
-    completed = store.get_task(task["id"])
-    assert completed is not None
-    assert completed["status"] == TaskStatus.SUCCEEDED.value
-    assert completed["final_message"] == "done scheduled task"
-    assert fake_agent.reset_count == 1
-    assert fake_phone_manager.released == [("device-1", "scheduled")]
-
-    cancel_task = store.create_task_run(
-        source="scheduled",
-        executor_key="scheduled_workflow",
-        device_id="device-1",
-        device_serial="serial-1",
-        input_text="cancel me",
-    )
+    cancel_task = asyncio.run(enqueue("cancel me"))
     manager._cancel_requested.add(cancel_task["id"])
-    asyncio.run(manager._execute_scheduled_workflow(cancel_task))
+    asyncio.run(manager._execute_scheduled_skill(cancel_task))
     cancelled = store.get_task(cancel_task["id"])
-    assert cancelled is not None
-    assert cancelled["status"] == TaskStatus.CANCELLED.value
+    assert cancelled is not None and cancelled["status"] == TaskStatus.CANCELLED.value
     assert cancelled["stop_reason"] == "user_stopped"
+    assert runs[1].cancelled and runs[1].action_calls == 0
 
-    class BusyManager(FakePhoneAgentManager):
-        async def acquire_device_async(self, *args, **kwargs) -> bool:
-            raise DeviceBusyError("busy")
-
-    busy_manager = BusyManager(fake_agent)
-    monkeypatch.setattr(
-        PhoneAgentManager,
-        "get_instance",
-        classmethod(lambda cls: busy_manager),
-    )
-    busy_task = store.create_task_run(
-        source="scheduled",
-        executor_key="scheduled_workflow",
-        device_id="device-busy",
-        device_serial="serial-busy",
-        input_text="busy",
-    )
-    asyncio.run(manager._execute_scheduled_workflow(busy_task))
+    busy_task = asyncio.run(enqueue("busy"))
+    asyncio.run(manager._execute_scheduled_skill(busy_task))
     busy = store.get_task(busy_task["id"])
-    assert busy is not None
-    assert busy["status"] == TaskStatus.FAILED.value
+    assert busy is not None and busy["status"] == TaskStatus.FAILED.value
     assert busy["stop_reason"] == "device_busy"
-    assert busy_manager.errors[-1] == (
-        "device-busy",
-        "Device device-busy is busy. Please wait.",
-        "scheduled",
-    )
+    assert runs[2].action_calls == 0
 
-    class InitErrorManager(FakePhoneAgentManager):
-        def get_agent_with_context(self, device_id: str, **kwargs):
-            raise AgentInitializationError("missing config")
-
-    init_manager = InitErrorManager(fake_agent)
-    monkeypatch.setattr(
-        PhoneAgentManager,
-        "get_instance",
-        classmethod(lambda cls: init_manager),
-    )
-    init_task = store.create_task_run(
-        source="scheduled",
-        executor_key="scheduled_workflow",
-        device_id="device-init",
-        device_serial="serial-init",
-        input_text="init",
-    )
-    asyncio.run(manager._execute_scheduled_workflow(init_task))
+    init_task = asyncio.run(enqueue("init"))
+    asyncio.run(manager._execute_scheduled_skill(init_task))
     init_failed = store.get_task(init_task["id"])
-    assert init_failed is not None
-    assert init_failed["status"] == TaskStatus.FAILED.value
-    assert init_failed["stop_reason"] == "initialization_failed"
+    assert init_failed is not None and init_failed["status"] == TaskStatus.FAILED.value
     assert "missing config" in init_failed["final_message"]
+    assert reset_calls == [
+        scheduled["id"],
+        cancel_task["id"],
+        busy_task["id"],
+        init_task["id"],
+    ]
     store.close()
 
 

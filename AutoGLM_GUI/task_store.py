@@ -374,8 +374,11 @@ class TaskStore:
         status: str = TaskStatus.QUEUED.value,
         task_id: str | None = None,
         trace_id: str | None = None,
+        user_message: dict[str, Any] | None = None,
     ) -> TaskRecord:
         self._ensure_ready()
+        if user_message is not None:
+            json.dumps(user_message)  # Reject invalid payloads before creating a task.
         now = _now_iso()
         record_id = task_id or str(uuid4())
         task_trace_id = trace_id or current_trace_id()
@@ -397,44 +400,51 @@ class TaskStore:
         ):
             with self._lock:
                 assert self._conn is not None
-                self._conn.execute(
-                    """
-                    INSERT INTO task_runs (
-                        id, source, executor_key, session_id, scheduled_task_id, workflow_uuid,
-                        schedule_fire_id, device_id, device_serial, status, input_text,
-                        final_message, error_message, stop_reason, trace_id, step_count,
-                        created_at, started_at, finished_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 0, ?, NULL, NULL)
-                    """,
-                    (
-                        record_id,
-                        source,
-                        executor_key,
-                        session_id,
-                        scheduled_task_id,
-                        workflow_uuid,
-                        schedule_fire_id,
-                        device_id,
-                        device_serial,
-                        status,
-                        input_text,
-                        task_trace_id,
-                        now,
-                    ),
-                )
-                if session_id:
+                with self._conn:
                     self._conn.execute(
-                        "UPDATE task_sessions SET updated_at = ? WHERE id = ?",
-                        (now, session_id),
+                        """
+                        INSERT INTO task_runs (
+                            id, source, executor_key, session_id, scheduled_task_id, workflow_uuid,
+                            schedule_fire_id, device_id, device_serial, status, input_text,
+                            final_message, error_message, stop_reason, trace_id, step_count,
+                            created_at, started_at, finished_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 0, ?, NULL, NULL)
+                        """,
+                        (
+                            record_id,
+                            source,
+                            executor_key,
+                            session_id,
+                            scheduled_task_id,
+                            workflow_uuid,
+                            schedule_fire_id,
+                            device_id,
+                            device_serial,
+                            status,
+                            input_text,
+                            task_trace_id,
+                            now,
+                        ),
                     )
-                self._append_event_locked(
-                    task_id=record_id,
-                    event_type="status",
-                    role="system",
-                    payload={"status": status},
-                )
-                self._conn.commit()
-                return self.get_task(record_id) or {}
+                    if session_id:
+                        self._conn.execute(
+                            "UPDATE task_sessions SET updated_at = ? WHERE id = ?",
+                            (now, session_id),
+                        )
+                    self._append_event_locked(
+                        task_id=record_id,
+                        event_type="status",
+                        role="system",
+                        payload={"status": status},
+                    )
+                    if user_message is not None:
+                        self._append_event_locked(
+                            task_id=record_id,
+                            event_type="user_message",
+                            role="user",
+                            payload=user_message,
+                        )
+                    return self.get_task(record_id) or {}
 
     def set_task_trace_id(self, task_id: str, trace_id: str) -> TaskRecord | None:
         self._ensure_ready()

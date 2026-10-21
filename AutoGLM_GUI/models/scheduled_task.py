@@ -35,7 +35,10 @@ class ScheduledTask:
 
     # 基础信息
     name: str = ""  # 任务名称
-    workflow_uuid: str = ""  # 关联的 Workflow UUID
+    skill_id: str = ""
+    skill_version: int = 1
+    parameters: dict[str, str | int | bool] = field(default_factory=dict)
+    invalid_reason: str | None = None
     device_serialnos: list[str] = field(
         default_factory=list
     )  # 绑定的设备 serialno 列表
@@ -46,7 +49,6 @@ class ScheduledTask:
     # 调度配置
     cron_expression: str = ""  # Cron 表达式 (如 "0 8 * * *")
     enabled: bool = True  # 是否启用
-    execution_mode: str = "classic"  # classic | layered
 
     # 元数据
     created_at: datetime = field(default_factory=datetime.now)
@@ -66,12 +68,14 @@ class ScheduledTask:
         return {
             "id": self.id,
             "name": self.name,
-            "workflow_uuid": self.workflow_uuid,
+            "skill_id": self.skill_id,
+            "skill_version": self.skill_version,
+            "parameters": self.parameters,
+            "invalid_reason": self.invalid_reason,
             "device_serialnos": self.device_serialnos,
             "device_group_id": self.device_group_id,
             "cron_expression": self.cron_expression,
             "enabled": self.enabled,
-            "execution_mode": self.execution_mode,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "last_run_time": self.last_run_time.isoformat()
@@ -86,7 +90,10 @@ class ScheduledTask:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ScheduledTask:
-        """从字典创建实例，向后兼容旧数据格式."""
+        """Load records; old workflow schedules remain visible but cannot execute."""
+        invalid_reason = data.get("invalid_reason")
+        if "workflow_uuid" in data or not data.get("skill_id"):
+            invalid_reason = "Legacy workflow schedule disabled; select a versioned skill and parameters."
         # 处理设备序列号：支持旧格式的单字符串和新格式的列表
         device_serialnos = _normalize_device_serialnos(data.get("device_serialnos", []))
         if not device_serialnos:
@@ -97,12 +104,14 @@ class ScheduledTask:
         return cls(
             id=data.get("id", str(uuid4())),
             name=data.get("name", ""),
-            workflow_uuid=data.get("workflow_uuid", ""),
+            skill_id=data.get("skill_id", ""),
+            skill_version=data.get("skill_version", 1),
+            parameters=data.get("parameters", {}),
+            invalid_reason=invalid_reason,
             device_serialnos=device_serialnos,
             device_group_id=data.get("device_group_id"),
             cron_expression=data.get("cron_expression", ""),
-            enabled=data.get("enabled", True),
-            execution_mode=data.get("execution_mode", "classic"),
+            enabled=False if invalid_reason else data.get("enabled", True),
             created_at=datetime.fromisoformat(data["created_at"])
             if data.get("created_at")
             else datetime.now(tz=timezone.utc),

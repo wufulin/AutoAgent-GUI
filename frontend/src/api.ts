@@ -9,14 +9,23 @@ export function getErrorMessage(error: unknown): string {
   if (error && typeof error === 'object') {
     // redaxios 错误格式: { data: { detail: string }, status: number }
     const axiosError = error as {
-      data?: { detail?: string };
+      data?: {
+        detail?: string | Array<{ loc?: Array<string | number>; msg?: string }>;
+      };
       status?: number;
       message?: string;
     };
 
     // 优先使用后端返回的 detail 字段
     if (axiosError.data?.detail) {
-      return axiosError.data.detail;
+      return typeof axiosError.data.detail === 'string'
+        ? axiosError.data.detail
+        : axiosError.data.detail
+            .map(
+              item =>
+                `${item.loc?.join('.') || ''}: ${item.msg || 'Invalid value'}`
+            )
+            .join('; ');
     }
 
     // 其次使用 message 字段
@@ -856,55 +865,111 @@ export async function cancelQRPairing(
   return res.data;
 }
 
-// ==================== Workflow API ====================
+// ==================== Skills API ====================
 
-export interface Workflow {
-  uuid: string;
+export type SkillValue = string | number | boolean;
+export interface SkillParameter {
+  type: 'string' | 'integer' | 'boolean';
+  description: string;
+  required: boolean;
+  default?: SkillValue | null;
+  enum?: SkillValue[] | null;
+}
+export interface SkillStep {
+  effect: 'navigation' | 'read' | 'write';
+  id: string;
+  goal: string;
+  success_criteria: string[];
+  constraints: string[];
+  max_steps: number;
+  max_resumes: number;
+}
+export interface SkillDefinition {
+  id: string;
+  version: number;
   name: string;
-  text: string;
+  description: string;
+  goal: string;
+  parameters: Record<string, SkillParameter>;
+  preconditions: string[];
+  constraints: string[];
+  steps: SkillStep[];
+  success_criteria: string[];
+  max_steps: number;
+  max_seconds: number;
+  enabled: boolean;
+  builtin: boolean;
 }
-
-export interface WorkflowListResponse {
-  workflows: Workflow[];
+export async function listSkills(): Promise<{ skills: SkillDefinition[] }> {
+  return (await axios.get<{ skills: SkillDefinition[] }>('/api/skills')).data;
 }
-
-export interface WorkflowCreateRequest {
-  name: string;
-  text: string;
+export async function getSkill(
+  id: string,
+  version?: number
+): Promise<SkillDefinition> {
+  return (
+    await axios.get<SkillDefinition>(`/api/skills/${encodeURIComponent(id)}`, {
+      params: version === undefined ? {} : { version },
+    })
+  ).data;
 }
-
-export interface WorkflowUpdateRequest {
-  name: string;
-  text: string;
+export async function createSkill(
+  skill: SkillDefinition
+): Promise<SkillDefinition> {
+  return (await axios.post<SkillDefinition>('/api/skills', skill)).data;
 }
-
-export async function listWorkflows(): Promise<WorkflowListResponse> {
-  const res = await axios.get<WorkflowListResponse>('/api/workflows');
-  return res.data;
+export async function updateSkill(
+  id: string,
+  expectedVersion: number,
+  skill: SkillDefinition
+): Promise<SkillDefinition> {
+  return (
+    await axios.put<SkillDefinition>(`/api/skills/${encodeURIComponent(id)}`, {
+      expected_version: expectedVersion,
+      skill,
+    })
+  ).data;
 }
-
-export async function getWorkflow(uuid: string): Promise<Workflow> {
-  const res = await axios.get<Workflow>(`/api/workflows/${uuid}`);
-  return res.data;
+export async function deleteSkill(
+  id: string,
+  expectedVersion: number
+): Promise<void> {
+  await axios.delete(`/api/skills/${encodeURIComponent(id)}`, {
+    params: { expected_version: expectedVersion },
+  });
 }
-
-export async function createWorkflow(
-  request: WorkflowCreateRequest
-): Promise<Workflow> {
-  const res = await axios.post<Workflow>('/api/workflows', request);
-  return res.data;
+export interface TaskExecution {
+  route: 'auto' | 'direct' | 'planner' | 'skill';
+  skill_id?: string;
+  skill_version?: number;
+  parameters: Record<string, SkillValue>;
+  success_criteria: string[];
+  constraints: string[];
+  max_steps: number;
+  max_seconds: number;
 }
-
-export async function updateWorkflow(
-  uuid: string,
-  request: WorkflowUpdateRequest
-): Promise<Workflow> {
-  const res = await axios.put<Workflow>(`/api/workflows/${uuid}`, request);
-  return res.data;
+export interface ExecutionRoute {
+  route: TaskExecution['route'];
+  reason: string;
+  skill_id?: string | null;
+  skill_version?: number | null;
+  skill_name?: string | null;
 }
-
-export async function deleteWorkflow(uuid: string): Promise<void> {
-  await axios.delete(`/api/workflows/${uuid}`);
+export interface ExecutionSummary {
+  route: TaskExecution['route'];
+  status: string;
+  stop_reason: string;
+  elapsed_ms: number;
+  steps: number;
+  subtasks: number;
+  continuations: number;
+  planner_calls: number;
+  executor_calls: number;
+  verifier_calls: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  usage_complete: boolean;
+  calls_complete?: boolean;
 }
 
 // ==================== Task API ====================
@@ -934,7 +999,8 @@ export interface TaskRunResponse {
   executor_key: string;
   session_id: string | null;
   scheduled_task_id: string | null;
-  workflow_uuid: string | null;
+  skill_id: string | null;
+  skill_version: number | null;
   schedule_fire_id: string | null;
   device_id: string;
   device_serial: string;
@@ -1083,11 +1149,12 @@ export async function listTaskSessionTasks(
 export async function submitTaskSessionTask(
   sessionId: string,
   message: string,
-  attachments: TaskImageAttachment[] = []
+  attachments: TaskImageAttachment[] = [],
+  execution?: TaskExecution
 ): Promise<TaskRunResponse> {
   const res = await axios.post<TaskRunResponse>(
     `/api/task-sessions/${sessionId}/tasks`,
-    { message, attachments }
+    { message, attachments, ...(execution ? { execution } : {}) }
   );
   return res.data;
 }
@@ -1197,6 +1264,7 @@ export interface HistoryRecordResponse {
   trace_id?: string | null;
   step_timings: StepTimingSummary[];
   trace_summary?: TraceTimingSummary | null;
+  execution_summary?: ExecutionSummary | null;
   messages: MessageRecordResponse[];
 }
 
@@ -1245,12 +1313,14 @@ export async function clearHistory(serialno: string): Promise<void> {
 export interface ScheduledTaskResponse {
   id: string;
   name: string;
-  workflow_uuid: string;
+  skill_id: string;
+  skill_version: number;
+  parameters: Record<string, SkillValue>;
   device_serialnos: string[];
   device_group_id?: string | null;
   cron_expression: string;
   enabled: boolean;
-  execution_mode: 'classic' | 'layered';
+  invalid_reason?: string | null;
   created_at: string;
   updated_at: string;
   last_run_time: string | null;
@@ -1268,22 +1338,24 @@ export interface ScheduledTaskListResponse {
 
 export interface ScheduledTaskCreate {
   name: string;
-  workflow_uuid: string;
+  skill_id: string;
+  skill_version: number;
+  parameters: Record<string, SkillValue>;
   device_serialnos?: string[] | null;
   device_group_id?: string | null;
   cron_expression: string;
   enabled?: boolean;
-  execution_mode?: 'classic' | 'layered';
 }
 
 export interface ScheduledTaskUpdate {
   name?: string;
-  workflow_uuid?: string;
+  skill_id?: string;
+  skill_version?: number;
+  parameters?: Record<string, SkillValue>;
   device_serialnos?: string[] | null;
   device_group_id?: string | null;
   cron_expression?: string;
   enabled?: boolean;
-  execution_mode?: 'classic' | 'layered';
 }
 
 export async function listScheduledTasks(): Promise<ScheduledTaskListResponse> {

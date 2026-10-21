@@ -317,6 +317,14 @@ def _build_history_record_from_task(
             duration_ms = 0
 
     return HistoryRecordResponse(
+        execution_summary=next(
+            (
+                event["payload"]
+                for event in reversed(events)
+                if event["event_type"] == "execution_summary"
+            ),
+            None,
+        ),
         id=str(record["id"]),
         task_text=str(record["input_text"]),
         final_message=str(final_message),
