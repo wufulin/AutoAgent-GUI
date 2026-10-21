@@ -1189,7 +1189,9 @@ class DeviceManager:
         异步 agent 统一使用此入口，避免在事件循环中调用同步 DeviceProtocol。
         """
         if device_id.startswith("rmq1:"):
-            raise ValueError("RMQ1 iPhone 当前仅支持预览和手动操作，暂不支持 AI 任务")
+            from AutoGLM_GUI.devices.rmq1_ai import Rmq1AIAdapter
+
+            return Rmq1AIAdapter(self.get_rmq1_device(device_id))
         with self._devices_lock:
             managed = self.get_device_by_device_id(device_id)
             if not managed:

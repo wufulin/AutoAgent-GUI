@@ -20,7 +20,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self, cast
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import TypedDict
 
 from AutoGLM_GUI.logger import logger
@@ -57,7 +57,33 @@ class ThinkingMode(StrEnum):
     DEEP = "deep"  # 深度思考模式 - 完整思考过程
 
 
+class IPhoneVisionConfig(BaseModel):
+    """Optional iPhone-only model; never falls back to Android credentials."""
+
+    model_config = ConfigDict(extra="forbid")
+    base_url: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
+    api_key: str = Field(default="", repr=False)
+    temperature: float = Field(default=0.0, ge=0, le=2)
+
+    @field_validator("base_url")
+    @classmethod
+    def url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("iPhone model URL must use http:// or https://")
+        return value
+
+    @field_validator("model_name")
+    @classmethod
+    def name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("iPhone model name is required")
+        return value.strip()
+
+
 class ConfigFileData(TypedDict, total=False):
+    iphone_vision: dict[str, Any] | None
     base_url: str
     model_name: str
     api_key: str
@@ -73,6 +99,8 @@ class ConfigFileData(TypedDict, total=False):
 
 class ConfigModel(BaseModel):
     """类型安全的配置模型，使用 Pydantic 进行验证."""
+
+    iphone_vision: IPhoneVisionConfig | None = None
 
     base_url: str = ""
     model_name: str = "autoglm-phone-9b"
@@ -193,6 +221,8 @@ class ConfigLayer:
     decision_model_name: str | None = None
     decision_api_key: str | None = None
 
+    iphone_vision: dict[str, Any] | None = None
+
     source: ConfigSource = ConfigSource.DEFAULT
     explicit_keys: set[str] = field(default_factory=set, repr=False)
 
@@ -204,6 +234,7 @@ class ConfigLayer:
     def to_dict(self) -> ConfigFileData:
         """转换为字典，保留显式 null 字段."""
         data = {
+            "iphone_vision": self.iphone_vision,
             "base_url": self.base_url,
             "model_name": self.model_name,
             "api_key": self.api_key,
@@ -456,6 +487,7 @@ class UnifiedConfigManager:
 
             # 更新文件层
             file_values = {
+                "iphone_vision": config_data.get("iphone_vision"),
                 "base_url": config_data.get("base_url"),
                 "model_name": config_data.get("model_name"),
                 "api_key": config_data.get("api_key"),
@@ -509,6 +541,8 @@ class UnifiedConfigManager:
         merge_mode: bool = True,
         default_max_steps_set: bool = False,
         layered_max_turns_set: bool = False,
+        iphone_vision: IPhoneVisionConfig | None = None,
+        iphone_vision_set: bool = False,
     ) -> bool:
         """
         保存配置到文件，支持合并模式.
@@ -562,6 +596,11 @@ class UnifiedConfigManager:
             if decision_api_key is not None:
                 new_config["decision_api_key"] = decision_api_key
 
+            if iphone_vision_set:
+                new_config["iphone_vision"] = (
+                    iphone_vision.model_dump() if iphone_vision is not None else None
+                )
+
             previous_agent_type = self.get_effective_config().agent_type
 
             # 合并模式：保留现有文件中未提供的字段
@@ -575,6 +614,7 @@ class UnifiedConfigManager:
 
                     # 保留未提供的字段
                     preserve_keys = [
+                        "iphone_vision",
                         "api_key",
                         "temperature",
                         "agent_type",
@@ -680,6 +720,7 @@ class UnifiedConfigManager:
 
         # 所有配置字段
         config_keys = [
+            "iphone_vision",
             "base_url",
             "model_name",
             "api_key",
@@ -712,11 +753,11 @@ class UnifiedConfigManager:
 
         # 验证并缓存
         try:
-            self._effective_config = ConfigModel(**merged)
-            logger.debug(f"Effective config computed: {merged}")
+            self._effective_config = ConfigModel.model_validate(merged)
+            logger.debug("Effective config computed for keys: {}", sorted(merged))
             return self._effective_config
         except Exception as e:
-            logger.error(f"Configuration validation failed: {e}")
+            logger.error("Configuration validation failed: {}", type(e).__name__)
             # 降级到默认值
             self._effective_config = ConfigModel()
             return self._effective_config

@@ -68,6 +68,11 @@ def create_agent(
     Raises:
         ValueError: If agent_type is not registered
     """
+    # iPhone execution is device-scoped, not a global Android agent setting.
+    if agent_type == "rmq1-vision":
+        return _create_rmq1_agent(
+            model_config, agent_config, agent_specific_config, device
+        )
     if agent_type in REMOVED_AGENT_TYPES:
         raise ValueError(
             f"Agent type '{agent_type}' is no longer supported. "
@@ -197,3 +202,18 @@ def _create_qwen_agent(
 
 
 register_agent("qwen", _create_qwen_agent)
+
+
+def _create_rmq1_agent(
+    model_config: ModelConfig,
+    agent_config: AgentConfig,
+    agent_specific_config: AgentSpecificConfig,
+    device: DeviceProtocol,
+    **kwargs: Any,
+) -> AsyncAgent:
+    from .rmq1 import Rmq1VisionAgent
+    from AutoGLM_GUI.devices.rmq1_ai import Rmq1AIAdapter
+
+    if not isinstance(device, Rmq1AIAdapter):
+        raise ValueError("rmq1-vision requires the RMQ1 visual adapter")
+    return Rmq1VisionAgent(model_config, agent_config, device)

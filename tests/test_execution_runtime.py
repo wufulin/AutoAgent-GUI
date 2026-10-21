@@ -356,7 +356,7 @@ def test_explicit_skill_honors_additional_task_criteria_and_constraints(monkeypa
     monkeypatch.setattr(
         execution,
         "resolve_route",
-        lambda message, request: ("skill", "explicit_skill", compiled),
+        lambda message, request, device_id=None: ("skill", "explicit_skill", compiled),
     )
     request = ExecutionRequest(
         route="skill",

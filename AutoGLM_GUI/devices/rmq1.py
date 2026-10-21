@@ -401,6 +401,16 @@ class RMQ1Device:
             finally:
                 os.close(directory)
 
+    def cached_action(self, action_id: str, signature: str) -> dict[str, Any] | None:
+        """Read a receipt without reacquiring input authority or replaying HID."""
+        cached = self._actions.get(action_id)
+        if cached is None:
+            return None
+        previous, result = cached
+        if previous != signature:
+            raise RMQ1Error("操作 ID 已被其他请求使用")
+        return result.copy()
+
     def gesture(
         self,
         *,

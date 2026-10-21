@@ -72,6 +72,8 @@ class TaskManager:
     async def create_chat_session(
         self, *, device_id: str, device_serial: str, mode: str = "classic"
     ) -> TaskSessionRecord:
+        if device_id.startswith("rmq1:") and mode != "layered":
+            raise ValueError("RMQ1 iPhone requires the scoped task entry")
         return await asyncio.to_thread(
             self.store.create_session,
             kind="chat",
@@ -137,9 +139,21 @@ class TaskManager:
 
         session_mode = str(session["mode"])
         if execution is not None:
+            if device_id.startswith("rmq1:"):
+                execution = {"max_seconds": 600, **execution}
             if session_mode != "layered":
                 raise ValueError("Execution routing requires a layered session")
             execution = ExecutionRequest.model_validate(execution).model_dump()
+        if device_id.startswith("rmq1:"):
+            from AutoGLM_GUI.execution import resolve_route
+
+            if session_mode != "layered" or attachments:
+                raise ValueError(
+                    "RMQ1 iPhone requires the scoped task entry without attachments"
+                )
+            request = ExecutionRequest.model_validate(execution or {"max_seconds": 600})
+            resolve_route(message, request, device_id)
+            execution = request.model_dump()
         executor_key = {
             "classic": "classic_chat",
             "layered": "layered_chat",

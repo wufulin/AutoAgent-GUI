@@ -5,16 +5,32 @@ import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { useTranslation } from '../lib/i18n-context';
 import { Rmq1Panel } from './Rmq1Panel';
+import { ChatKitPanel } from './ChatKitPanel';
 
-/** Layout only: do not mount an Android task session for an RMQ1 device. */
+/** Mount the shared task UI only when the separate iPhone model is configured. */
 export function Rmq1ChatPanel({
   deviceId,
   deviceName,
+  configured = false,
 }: {
   deviceId: string;
   deviceName: string;
+  configured?: boolean;
 }) {
   const t = useTranslation();
+  if (configured)
+    return (
+      <div className="@container flex min-h-0 min-w-0 flex-1">
+        <ChatKitPanel
+          deviceId={deviceId}
+          deviceSerial={deviceId}
+          deviceName={deviceName}
+          deviceConnectionType="rmq1"
+          isVisible
+          plannerConfigured
+        />
+      </div>
+    );
   return (
     <div className="@container min-h-0 min-w-0 flex-1">
       <div
@@ -42,7 +58,7 @@ export function Rmq1ChatPanel({
               variant="secondary"
               className="shrink-0 bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
             >
-              AI 待接入
+              AI 未配置
             </Badge>
           </header>
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto p-6 text-center">
@@ -54,7 +70,7 @@ export function Rmq1ChatPanel({
               id="rmq1-ai-availability"
               className="mt-2 max-w-xs text-sm text-muted-foreground"
             >
-              对话入口已预留，AI 自动操作将在后续接入。
+              请在设置中启用并配置 iPhone 独立视觉模型。
               当前可在手机画面中手动点击和滑动。
             </p>
           </div>

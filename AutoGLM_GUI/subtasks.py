@@ -561,6 +561,9 @@ class SubtaskRunContext:
     cancelled: bool = False
     closed: bool = False
     fatal_result: SubtaskResult | None = None
+    ios_group_name: str | None = None
+    ios_phase: str | None = None
+    ios_search_verified: bool = False
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _close_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _leased: set[str] = field(default_factory=set)
@@ -872,6 +875,12 @@ class SubtaskRunContext:
         from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
 
         manager = PhoneAgentManager.get_instance()
+        if device_id.startswith("rmq1:") and (
+            not self.ios_group_name or self.ios_phase not in {"open", "search", "enter"}
+        ):
+            return self.stop(
+                goal, "iphone_skill_required", "iPhone 仅允许已授权微信群导航技能。"
+            )
         state = self.checkpoints.pop(checkpoint, None) if checkpoint else None
         if checkpoint and (
             state is None
@@ -909,6 +918,16 @@ class SubtaskRunContext:
                 device_id, context=self.owner, agent_type=None
             )
             self.agents[device_id] = agent
+            if device_id.startswith("rmq1:"):
+                from AutoGLM_GUI.agents.rmq1 import Rmq1VisionAgent
+
+                if not isinstance(agent, Rmq1VisionAgent):
+                    raise ValueError("iPhone executor mismatch")
+                agent.bind_scenario(
+                    self.ios_group_name or "",
+                    self.ios_phase or "",
+                    self.ios_search_verified,
+                )
             if isinstance(agent, AsyncAgentBase):
                 prompt = agent.get_system_prompt()
                 if LAYERED_EXECUTOR_INSTRUCTIONS not in prompt:

@@ -12,12 +12,16 @@ export function ExecutionOptions({
   skills,
   disabled,
   plannerConfigured = true,
+  allowedRoutes,
+  defaultMaxSeconds = 300,
 }: {
   value: TaskExecution;
   onChange: (value: TaskExecution) => void;
   skills: SkillDefinition[];
   disabled: boolean;
   plannerConfigured?: boolean;
+  allowedRoutes?: TaskExecution['route'][];
+  defaultMaxSeconds?: number;
 }) {
   const t = useTranslation();
   const id = useId();
@@ -46,11 +50,13 @@ export function ExecutionOptions({
               success_criteria: [],
               constraints: [],
               max_steps: 60,
-              max_seconds: 300,
+              max_seconds: defaultMaxSeconds,
             })
           }
         >
-          {(['auto', 'planner', 'direct', 'skill'] as const).map(route => (
+          {(
+            allowedRoutes || (['auto', 'planner', 'direct', 'skill'] as const)
+          ).map(route => (
             <option
               value={route}
               key={route}
@@ -80,7 +86,7 @@ export function ExecutionOptions({
                   skill_version: selected?.version,
                   parameters: selected ? skillDefaults(selected) : {},
                   max_steps: selected?.max_steps ?? 60,
-                  max_seconds: selected?.max_seconds ?? 300,
+                  max_seconds: selected?.max_seconds ?? defaultMaxSeconds,
                 });
               }}
             >

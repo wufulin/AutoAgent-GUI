@@ -277,6 +277,20 @@ class PhoneAgentManager:
                 ):
                     device = device_manager.get_async_device_protocol(actual_device_id)
 
+            if actual_device_id.startswith("rmq1:"):
+                from AutoGLM_GUI.devices.rmq1_ai import Rmq1AIAdapter
+
+                owner = device_id.removeprefix(actual_device_id + ":")
+                if (
+                    agent_type != "rmq1-vision"
+                    or not owner.startswith("layered:")
+                    or not isinstance(device, Rmq1AIAdapter)
+                ):
+                    raise AgentInitializationError(
+                        "iPhone AI requires a scoped navigation task"
+                    )
+                device.lease_owner = owner
+
             with trace_span(
                 "agent_manager.create_agent",
                 attrs={"device_id": device_id, "agent_type": agent_type},
@@ -416,6 +430,24 @@ class PhoneAgentManager:
         config_manager.sync_to_env()
 
         effective_config = config_manager.get_effective_config()
+
+        if actual_device_id.startswith("rmq1:"):
+            iphone = effective_config.iphone_vision
+            if iphone is None:
+                raise AgentInitializationError("请先配置 iPhone 独立视觉模型")
+            await self._initialize_agent_with_factory_unsafe(
+                device_id=agent_key,
+                agent_type="rmq1-vision",
+                model_config=ModelConfig(
+                    base_url=iphone.base_url,
+                    model_name=iphone.model_name,
+                    api_key=iphone.api_key or "EMPTY",
+                    temperature=iphone.temperature,
+                ),
+                agent_config=AgentConfig(device_id=actual_device_id),
+                agent_specific_config={},
+            )
+            return
 
         if not effective_config.base_url:
             raise AgentInitializationError(
@@ -838,6 +870,43 @@ class PhoneAgentManager:
 
     async def manual_recovery_required(self, device_id: str) -> bool:
         return await self.device_recovery_required(device_id)
+
+    async def settle_rmq1_manual(
+        self, device_id: str, owner: str, uncertain: bool
+    ) -> None:
+        async with self._manager_lock:
+            physical = self._physical_key(device_id)
+            if self._manual_owners.get(physical) != owner:
+                return
+            if uncertain:
+                self._manual_uncertain.add(physical)
+            elif physical not in self._manual_uncertain:
+                self._manual_owners.pop(physical, None)
+
+    async def recover_rmq1_control(self, device_id: str, session_id: str) -> None:
+        from AutoGLM_GUI.device_manager import DeviceManager
+
+        async with self._manager_lock:
+            physical = self._physical_key(device_id)
+            adapters = self._device_adapters.get(physical, set())
+            if (
+                physical in self._device_leases
+                or self._physical_busy(physical)
+                or any(adapter.pending_writes for adapter in adapters)
+                or (
+                    physical in self._manual_owners
+                    and physical not in self._manual_uncertain
+                )
+            ):
+                raise DeviceBusyError(
+                    "Stop input and wait for settlement before recovery"
+                )
+            DeviceManager.get_instance().get_rmq1_device(device_id).recover(session_id)
+            for adapter in adapters:
+                adapter.recover()
+            self._device_quarantine.pop(physical, None)
+            self._manual_uncertain.discard(physical)
+            self._manual_owners.pop(physical, None)
 
     async def recover_manual_control(self, device_id: str) -> None:
         """Only called after an explicit human confirmation, never by reconnect."""

@@ -684,9 +684,13 @@ def test_manager_preserves_rmq1_and_blocks_android_dispatch(monkeypatch, tmp_pat
     assert item.to_dict()["platform"] == "ios"
     assert item.connection_type.value == "rmq1"
     assert item.status == "device"
-    for getter in (manager.get_device_protocol, manager.get_async_device_protocol):
-        with pytest.raises(ValueError, match="暂不支持 AI"):
-            getter(serial)
+    with pytest.raises(ValueError, match="暂不支持 AI"):
+        manager.get_device_protocol(serial)
+    from AutoGLM_GUI.devices.rmq1_ai import Rmq1AIAdapter
+
+    adapter = manager.get_async_device_protocol(serial)
+    assert isinstance(adapter, Rmq1AIAdapter)
+    assert adapter.lease_owner == ""  # Creation alone never grants input authority.
     with pytest.raises(RMQ1Error, match="已连接"):
         manager.add_rmq1_device("192.168.1.20", "a" * 64, "admin", "password")
     manager.remove_rmq1_device(serial)
@@ -1097,3 +1101,73 @@ def test_recovery_cannot_queue_behind_input_and_clear_a_later_unknown(device):
     device.recover(device.session_id)
     assert not device.recovery_required
     assert len(device.transport.socket.sent) == sent_count
+
+
+def test_unknown_http_receipt_can_be_read_without_replaying_or_losing_quarantine(
+    device, monkeypatch
+):
+    from types import SimpleNamespace
+    from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
+
+    manager = PhoneAgentManager()
+    monkeypatch.setattr(PhoneAgentManager, "get_instance", lambda: manager)
+    monkeypatch.setattr(
+        DeviceManager,
+        "get_instance",
+        lambda: SimpleNamespace(get_rmq1_device=lambda _: device),
+    )
+    app = FastAPI()
+    app.include_router(api.router)
+    args = {"device_id": device.device_id, **gesture_args(device)}
+    original_send = device.transport.socket.send
+
+    def fail_release(value):
+        original_send(value)
+        if value == b"\x02\x00left":
+            raise OSError("fixture release failed")
+
+    monkeypatch.setattr(device.transport.socket, "send", fail_release)
+    with TestClient(app) as client:
+        first = client.post("/api/rmq1/gesture", json=args)
+        assert first.json()["outcome"] == "unknown"
+        sent = len(device.transport.socket.sent)
+        again = client.post("/api/rmq1/gesture", json=args)
+        assert again.json() == first.json()
+        assert len(device.transport.socket.sent) == sent
+        assert device.device_id in manager._manual_uncertain
+
+
+def test_ai_lease_blocks_both_rmq1_manual_endpoints_without_hid(device, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
+
+    manager = PhoneAgentManager()
+    monkeypatch.setattr(PhoneAgentManager, "get_instance", lambda: manager)
+    monkeypatch.setattr(
+        DeviceManager,
+        "get_instance",
+        lambda: SimpleNamespace(get_rmq1_device=lambda _: device),
+    )
+    asyncio.run(manager.acquire_device_lease(device.device_id, "task"))
+    app = FastAPI()
+    app.include_router(api.router)
+    args = {"device_id": device.device_id, **gesture_args(device)}
+    with TestClient(app) as client:
+        assert client.post("/api/rmq1/gesture", json=args).status_code == 409
+        with client.websocket_connect(
+            "/api/rmq1/control?device_id=" + device.device_id,
+            headers={"origin": "http://testserver"},
+        ) as ws:
+            ws.send_json(
+                {
+                    "type": "down",
+                    "action_id": args["action_id"],
+                    "session_id": args["session_id"],
+                    "frame_id": args["frame_id"],
+                    "point": [0.5, 0.5],
+                }
+            )
+            result = ws.receive_json()
+            assert result["outcome"] == "rejected"
+    assert not device.transport.socket.sent

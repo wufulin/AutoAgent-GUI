@@ -691,7 +691,15 @@ export async function sendTouchUp(
 
 // Configuration Management
 
+export interface IPhoneVisionConfig {
+  base_url: string;
+  model_name: string;
+  api_key: string;
+  temperature: number;
+}
+
 export interface ConfigResponse {
+  iphone_vision?: IPhoneVisionConfig | null;
   base_url: string;
   model_name: string;
   api_key: string;
@@ -712,6 +720,7 @@ export interface ConfigResponse {
 }
 
 export interface ConfigSaveRequest {
+  iphone_vision?: IPhoneVisionConfig | null;
   base_url: string;
   model_name: string;
   api_key?: string;
@@ -885,6 +894,7 @@ export interface SkillStep {
   max_resumes: number;
 }
 export interface SkillDefinition {
+  platforms?: string[];
   id: string;
   version: number;
   name: string;
@@ -1538,6 +1548,27 @@ export async function rmq1Request<T = { success: boolean }>(
         fetch(input, { ...init, signal: controller.signal }),
     });
     return response.data;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export async function checkIPhoneVision(
+  config: IPhoneVisionConfig
+): Promise<ModelConnectionResponse> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 110000);
+  try {
+    return (
+      await axios.post<ModelConnectionResponse>(
+        '/api/config/iphone-vision-check',
+        config,
+        {
+          fetch: (input, init) =>
+            fetch(input, { ...init, signal: controller.signal }),
+        }
+      )
+    ).data;
   } finally {
     window.clearTimeout(timer);
   }

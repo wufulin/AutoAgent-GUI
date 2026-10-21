@@ -52,6 +52,7 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { ExecutionOptions } from './ExecutionOptions';
+import { Rmq1Panel } from './Rmq1Panel';
 import { ExecutionSummaryCard } from './ExecutionSummaryCard';
 import { textLines, validSkillParameters } from '../lib/skills';
 import { HistoryItemCard } from './HistoryItemCard';
@@ -373,6 +374,7 @@ export function ChatKitPanel({
   plannerConfigured = true,
 }: ChatKitPanelProps) {
   const t = useTranslation();
+  const isIphone = deviceConnectionType === 'rmq1';
 
   // Chat state
   const [messages, setMessages] = React.useState<Message[]>([]);
@@ -403,12 +405,15 @@ export function ChatKitPanel({
 
   const [skills, setSkills] = React.useState<SkillDefinition[]>([]);
   const [execution, setExecution] = React.useState<TaskExecution>({
-    route: plannerConfigured ? 'auto' : 'direct',
+    route: isIphone ? 'skill' : plannerConfigured ? 'auto' : 'direct',
+    ...(isIphone
+      ? { skill_id: 'ios_wechat_open_group', skill_version: 1 }
+      : {}),
     parameters: {},
     success_criteria: [],
     constraints: [],
     max_steps: 60,
-    max_seconds: 300,
+    max_seconds: isIphone ? 600 : 300,
   });
 
   // History state
@@ -457,9 +462,17 @@ export function ChatKitPanel({
 
   React.useEffect(() => {
     listSkills()
-      .then(data => setSkills(data.skills))
+      .then(data =>
+        setSkills(
+          data.skills.filter(skill =>
+            (skill.platforms || ['android']).includes(
+              isIphone ? 'ios' : 'android'
+            )
+          )
+        )
+      )
       .catch(err => setError(getErrorMessage(err)));
-  }, []);
+  }, [isIphone]);
 
   // Load history items when popover opens
   React.useEffect(() => {
@@ -599,7 +612,12 @@ export function ChatKitPanel({
           }
         },
         message => {
-          setError(message);
+          setError(
+            isIphone
+              ? `${message}；请刷新恢复任务状态，确认停止后再接管。`
+              : message
+          );
+          if (isIphone) return;
           setLoading(false);
           setAborting(false);
           setWaitingForUserInteraction(false);
@@ -608,7 +626,7 @@ export function ChatKitPanel({
         afterSeq
       );
     },
-    [replaceTaskMessages]
+    [replaceTaskMessages, isIphone]
   );
 
   const restoreSessionConversation = React.useCallback(
@@ -811,10 +829,18 @@ export function ChatKitPanel({
     if (!taskId) return;
 
     setAborting(true);
+    let waitingForSettlement = false;
 
     void (async () => {
       try {
         const response = await cancelTaskRun(taskId);
+        if (
+          isIphone &&
+          (!response.task || isTaskActive(response.task.status))
+        ) {
+          waitingForSettlement = true;
+          return;
+        }
         // Even if the backend still says RUNNING, we've sent the abort signal.
         // To prevent the UI from flickering or showing the stop button again,
         // we clear the current task ID immediately on successful request.
@@ -828,10 +854,11 @@ export function ChatKitPanel({
         setError(getErrorMessage(abortError));
       }
     })().finally(() => {
+      if (waitingForSettlement) return;
       setLoading(false);
       setAborting(false);
     });
-  }, [replaceTaskMessages]);
+  }, [replaceTaskMessages, isIphone]);
 
   const handleReset = React.useCallback(async () => {
     try {
@@ -878,11 +905,18 @@ export function ChatKitPanel({
   };
 
   return (
-    <div className="flex-1 flex gap-4 p-4 items-stretch justify-center min-h-0">
+    <div
+      data-testid={isIphone ? 'rmq1-workspace' : undefined}
+      className="@container flex-1 flex gap-4 p-4 items-stretch justify-center min-h-0 min-w-0 @max-[720px]:flex-col @max-[720px]:overflow-y-auto"
+    >
       {/* Chat Area with Execution Steps */}
-      <Card className="flex-1 flex flex-col min-h-0 max-w-2xl overflow-hidden">
+      <Card
+        role="region"
+        aria-label={isIphone ? 'iPhone AI 助手' : undefined}
+        className="flex-1 flex flex-col min-h-0 min-w-0 max-w-2xl overflow-hidden @max-[720px]:min-h-[640px] @max-[720px]:flex-none @max-[720px]:w-full"
+      >
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800">
+        <div className="flex flex-wrap gap-2 items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-purple-500/10">
               <Layers className="h-5 w-5 text-purple-500" />
@@ -899,7 +933,7 @@ export function ChatKitPanel({
           <div className="flex items-center gap-2">
             <Badge
               variant="secondary"
-              className="bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
+              className="shrink-0 whitespace-nowrap bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
             >
               {t.skills[execution.route]}
             </Badge>
@@ -1226,13 +1260,15 @@ export function ChatKitPanel({
         </div>
 
         {/* Input area */}
-        <div className="p-4 border-t border-slate-200 dark:border-slate-800">
+        <div className="shrink-0 p-4 border-t border-slate-200 dark:border-slate-800">
           <ExecutionOptions
             value={execution}
             onChange={setExecution}
             skills={skills}
             disabled={loading}
             plannerConfigured={plannerConfigured}
+            allowedRoutes={isIphone ? ['auto', 'skill'] : undefined}
+            defaultMaxSeconds={isIphone ? 600 : 300}
           />
           {execution.route === 'skill' && (
             <p className="mb-2 text-xs text-muted-foreground">
@@ -1269,7 +1305,10 @@ export function ChatKitPanel({
                 size="icon"
                 variant="destructive"
                 className="h-10 w-10 rounded-full flex-shrink-0"
-                title={t.chat?.abortChat || '中断任务'}
+                title={
+                  isIphone ? '停止并接管' : t.chat?.abortChat || '中断任务'
+                }
+                aria-label={isIphone ? '停止并接管' : undefined}
               >
                 {aborting ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -1297,12 +1336,16 @@ export function ChatKitPanel({
         </div>
       </Card>
 
-      <DeviceMonitor
-        deviceId={deviceId}
-        serial={deviceSerial}
-        connectionType={deviceConnectionType}
-        isVisible={isVisible}
-      />
+      {isIphone ? (
+        <Rmq1Panel deviceId={deviceId} readOnly={loading || aborting} />
+      ) : (
+        <DeviceMonitor
+          deviceId={deviceId}
+          serial={deviceSerial}
+          connectionType={deviceConnectionType}
+          isVisible={isVisible}
+        />
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import {
   connectWifi,
   disconnectWifi,
   getConfig,
+  checkIPhoneVision,
   saveConfig,
   modelServiceConnection,
   getErrorMessage,
@@ -228,7 +229,16 @@ export function ChatComponent() {
     success: boolean;
     message: string;
   } | null>(null);
+  const [iphoneTesting, setIphoneTesting] = useState(false);
+  const [iphoneTestResult, setIphoneTestResult] = useState('');
   const [tempConfig, setTempConfig] = useState({
+    iphone_enabled: false,
+    iphone_vision: {
+      base_url: '',
+      model_name: '',
+      api_key: '',
+      temperature: 0,
+    },
     base_url: VISION_PRESETS[0].config.base_url as string,
     model_name: VISION_PRESETS[0].config.model_name as string,
     api_key: '',
@@ -262,6 +272,7 @@ export function ChatComponent() {
             isSupportedAgent(data.agent_type)
         );
         setConfig({
+          iphone_vision: data.iphone_vision,
           base_url: data.base_url,
           model_name: data.model_name,
           api_key: data.api_key || undefined,
@@ -277,6 +288,13 @@ export function ChatComponent() {
         // 当后端返回空配置时，使用智谱预设作为默认值
         const useDefault = !data.base_url;
         const newTempConfig = {
+          iphone_enabled: !!data.iphone_vision,
+          iphone_vision: data.iphone_vision || {
+            base_url: '',
+            model_name: '',
+            api_key: '',
+            temperature: 0,
+          },
           base_url: useDefault
             ? VISION_PRESETS[0].config.base_url
             : data.base_url,
@@ -355,6 +373,9 @@ export function ChatComponent() {
     try {
       // 1. 保存配置
       const saveResult = await saveConfig({
+        iphone_vision: tempConfig.iphone_enabled
+          ? tempConfig.iphone_vision
+          : null,
         base_url: tempConfig.base_url,
         model_name: tempConfig.model_name || 'autoglm-phone-9b',
         api_key: tempConfig.api_key || undefined,
@@ -373,6 +394,9 @@ export function ChatComponent() {
 
       const effectiveConfig = await getConfig();
       setConfig({
+        iphone_vision: tempConfig.iphone_enabled
+          ? tempConfig.iphone_vision
+          : null,
         base_url: tempConfig.base_url,
         model_name: tempConfig.model_name,
         api_key: tempConfig.api_key || undefined,
@@ -526,7 +550,7 @@ export function ChatComponent() {
             onValueChange={setConfigTab}
             className="flex-1 flex flex-col min-h-0"
           >
-            <TabsList className="grid w-full grid-cols-3 flex-shrink-0">
+            <TabsList className="grid w-full grid-cols-2 h-auto gap-1 flex-shrink-0">
               <TabsTrigger value="vision">
                 <Eye className="w-4 h-4 mr-2" />
                 {t.chat.visionModelTab}
@@ -535,10 +559,112 @@ export function ChatComponent() {
                 <Brain className="w-4 h-4 mr-2" />
                 {t.chat.decisionModelTab}
               </TabsTrigger>
+              <TabsTrigger value="iphone">iPhone 视觉模型</TabsTrigger>
               <TabsTrigger value="advanced">
                 {t.chat.advancedSettings}
               </TabsTrigger>
             </TabsList>
+
+            <TabsContent
+              value="iphone"
+              className="space-y-4 mt-4 overflow-y-auto flex-1 min-h-0"
+            >
+              <p className="text-sm text-muted-foreground">
+                为 RMQ1 iPhone 单独配置视觉模型。需支持图片、工具调用和只读
+                JSON。首版支持搜索并进入微信群，不发送消息。
+              </p>
+              <Label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={tempConfig.iphone_enabled}
+                  onChange={event =>
+                    setTempConfig(prev => ({
+                      ...prev,
+                      iphone_enabled: event.target.checked,
+                    }))
+                  }
+                />
+                启用 iPhone AI
+              </Label>
+              {(['base_url', 'model_name', 'api_key'] as const).map(field => (
+                <div className="space-y-2" key={field}>
+                  <Label htmlFor={`iphone-${field}`}>
+                    {field === 'base_url'
+                      ? 'iPhone 服务地址'
+                      : field === 'model_name'
+                        ? 'iPhone 模型名称'
+                        : 'iPhone API Key'}
+                  </Label>
+                  <Input
+                    id={`iphone-${field}`}
+                    type={field === 'api_key' ? 'password' : 'text'}
+                    autoComplete="off"
+                    disabled={!tempConfig.iphone_enabled}
+                    value={tempConfig.iphone_vision[field]}
+                    onChange={event =>
+                      setTempConfig(prev => ({
+                        ...prev,
+                        iphone_vision: {
+                          ...prev.iphone_vision,
+                          [field]: event.target.value,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+              ))}
+              <div className="space-y-2">
+                <Label htmlFor="iphone-temperature">iPhone 温度</Label>
+                <Input
+                  id="iphone-temperature"
+                  type="number"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  disabled={!tempConfig.iphone_enabled}
+                  value={tempConfig.iphone_vision.temperature}
+                  onChange={event =>
+                    setTempConfig(prev => ({
+                      ...prev,
+                      iphone_vision: {
+                        ...prev.iphone_vision,
+                        temperature: Number(event.target.value),
+                      },
+                    }))
+                  }
+                />
+              </div>
+              <Button
+                variant="outline"
+                disabled={
+                  iphoneTesting ||
+                  !tempConfig.iphone_enabled ||
+                  !tempConfig.iphone_vision.base_url ||
+                  !tempConfig.iphone_vision.model_name
+                }
+                onClick={async () => {
+                  setIphoneTesting(true);
+                  setIphoneTestResult('');
+                  try {
+                    const result = await checkIPhoneVision(
+                      tempConfig.iphone_vision
+                    );
+                    setIphoneTestResult(result.message);
+                  } catch {
+                    setIphoneTestResult('能力测试失败，请检查配置。');
+                  } finally {
+                    setIphoneTesting(false);
+                  }
+                }}
+              >
+                {iphoneTesting ? '正在测试…' : '测试 iPhone 视觉能力'}
+              </Button>
+              {iphoneTestResult && (
+                <p role="status" className="text-sm">
+                  {iphoneTestResult}
+                </p>
+              )}
+            </TabsContent>
 
             {/* 视觉模型 Tab */}
             <TabsContent
@@ -1143,6 +1269,13 @@ export function ChatComponent() {
                 setDecisionConnectionResult(null);
                 if (config) {
                   setTempConfig({
+                    iphone_enabled: !!config.iphone_vision,
+                    iphone_vision: config.iphone_vision || {
+                      base_url: '',
+                      model_name: '',
+                      api_key: '',
+                      temperature: 0,
+                    },
                     base_url: config.base_url,
                     model_name: config.model_name,
                     api_key: config.api_key || '',
@@ -1225,6 +1358,7 @@ export function ChatComponent() {
               {currentDevice.connection_type === 'rmq1' ? (
                 <Rmq1ChatPanel
                   deviceId={currentDevice.id}
+                  configured={!!config?.iphone_vision}
                   deviceName={currentDevice.display_name || currentDevice.model}
                 />
               ) : configuredAgentSupported === null ? (
