@@ -839,6 +839,12 @@ test('edits separate iPhone settings and probes generated images', async ({
         model_name: 'android-model',
         api_key: '',
         agent_type: 'glm-async',
+        iphone_vision: saved?.iphone_vision
+          ? {
+              ...(saved.iphone_vision as Record<string, unknown>),
+              base_url: 'https://iphone.example/v1',
+            }
+          : null,
       },
     });
   });
@@ -852,7 +858,7 @@ test('edits separate iPhone settings and probes generated images', async ({
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('tab', { name: 'iPhone 视觉模型', exact: true }).click();
   await page.getByLabel('启用 iPhone AI', { exact: true }).check();
-  await page.getByLabel('iPhone 服务地址').fill('https://iphone.example/v1');
+  await page.getByLabel('iPhone 服务地址').fill('https://iphone.example/v1/');
   await page.getByLabel('iPhone 模型名称').fill('ios-vision');
   await page.getByLabel('iPhone API Key').fill('fixture-key');
   await page
@@ -867,4 +873,10 @@ test('edits separate iPhone settings and probes generated images', async ({
       model_name: 'android-model',
       iphone_vision: { model_name: 'ios-vision', api_key: 'fixture-key' },
     });
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('tab', { name: 'iPhone 视觉模型', exact: true }).click();
+  await expect(page.getByLabel('iPhone 服务地址')).toHaveValue(
+    'https://iphone.example/v1'
+  );
 });

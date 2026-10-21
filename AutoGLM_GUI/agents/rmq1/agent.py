@@ -484,6 +484,7 @@ class Rmq1VisionAgent:
                         "target": action.target,
                         "page": check.page,
                         "outcome": result.get("outcome"),
+                        "cancelled": bool(result.get("cancelled")),
                     }
                 )
                 data = {
@@ -496,7 +497,10 @@ class Rmq1VisionAgent:
                     },
                     "success": result.get("success", False),
                     "finished": False,
-                    "message": "KVM 传输完成，等待新画面确认。",
+                    "cancelled": bool(result.get("cancelled")),
+                    "message": "输入已取消，原通道已确认释放。"
+                    if result.get("cancelled")
+                    else "KVM 传输完成，等待新画面确认。",
                     "receipt": result,
                 }
                 yield {"type": "step", "data": data}

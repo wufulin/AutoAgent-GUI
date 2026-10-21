@@ -394,9 +394,7 @@ export function ChatComponent() {
 
       const effectiveConfig = await getConfig();
       setConfig({
-        iphone_vision: tempConfig.iphone_enabled
-          ? tempConfig.iphone_vision
-          : null,
+        iphone_vision: effectiveConfig.iphone_vision ?? null,
         base_url: tempConfig.base_url,
         model_name: tempConfig.model_name,
         api_key: tempConfig.api_key || undefined,
@@ -428,7 +426,18 @@ export function ChatComponent() {
       }
 
       // Update the committed snapshot after save
-      lastCommittedTempConfigRef.current = structuredClone(tempConfig);
+      const committedTempConfig = {
+        ...tempConfig,
+        iphone_enabled: !!effectiveConfig.iphone_vision,
+        iphone_vision: effectiveConfig.iphone_vision || {
+          base_url: '',
+          model_name: '',
+          api_key: '',
+          temperature: 0,
+        },
+      };
+      setTempConfig(committedTempConfig);
+      lastCommittedTempConfigRef.current = structuredClone(committedTempConfig);
       await navigate({
         to: '/chat',
         search: {

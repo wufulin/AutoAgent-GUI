@@ -607,3 +607,42 @@ def test_recovery_does_not_clear_marker_while_ai_holds_lease(monkeypatch):
         raw.recover.assert_called_once()
 
     asyncio.run(run())
+
+
+def test_cancelled_transport_step_reports_confirmed_release_explicitly():
+    async def run():
+        adapter = SimpleNamespace(
+            lease_owner="task",
+            pending_writes=False,
+            outcome_unknown=False,
+            validate_owner=AsyncMock(),
+            observe=AsyncMock(return_value=observation()),
+            cancel_input=lambda: None,
+            execute=AsyncMock(
+                return_value={
+                    "success": True,
+                    "outcome": "completed",
+                    "cancelled": True,
+                }
+            ),
+        )
+        agent = Rmq1VisionAgent(ModelConfig(), AgentConfig(), adapter)
+        agent.bind_scenario("青城", "search", False)
+        agent._propose = AsyncMock(
+            return_value=IPhoneAction(
+                action="tap", page="wechat_search", target="search_field"
+            )
+        )
+        agent._inspect = AsyncMock(return_value=check())
+        events = []
+        with pytest.raises(asyncio.CancelledError):
+            async for event in agent.stream("search", step_budget=2):
+                events.append(event)
+        assert events[0]["data"]["cancelled"] is True
+        assert (
+            "取消" in events[0]["data"]["message"]
+            and "释放" in events[0]["data"]["message"]
+        )
+        await agent.openai_client.close()
+
+    asyncio.run(run())

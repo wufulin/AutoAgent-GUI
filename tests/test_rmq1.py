@@ -1171,3 +1171,62 @@ def test_ai_lease_blocks_both_rmq1_manual_endpoints_without_hid(device, monkeypa
             result = ws.receive_json()
             assert result["outcome"] == "rejected"
     assert not device.transport.socket.sent
+
+
+def test_cached_websocket_receipt_settles_a_dropped_terminal_event(device, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
+
+    manager = PhoneAgentManager()
+    monkeypatch.setattr(PhoneAgentManager, "get_instance", lambda: manager)
+    monkeypatch.setattr(
+        DeviceManager,
+        "get_instance",
+        lambda: SimpleNamespace(get_rmq1_device=lambda _: device),
+    )
+
+    class DroppedResultGesture:
+        def __init__(self, raw, *, action_id, session_id, frame_id, point, notify):
+            self.action_id, self.done = action_id, threading.Event()
+            self.signature = repr(("live", session_id, frame_id, point))
+
+        def start(self):
+            device._actions[self.action_id] = (
+                self.signature,
+                {
+                    "action_id": self.action_id,
+                    "success": True,
+                    "outcome": "completed",
+                    "recovery_required": False,
+                },
+            )
+            self.done.set()  # Simulate a completed worker whose result event was dropped.
+
+        def cancel(self):
+            pass
+
+        def join(self):
+            pass
+
+    monkeypatch.setattr(api, "LiveGesture", DroppedResultGesture)
+    app = FastAPI()
+    app.include_router(api.router)
+    frame = device.observe()
+    message = {
+        "type": "down",
+        "action_id": str(uuid4()),
+        "session_id": device.session_id,
+        "frame_id": frame["frame_id"],
+        "point": [0.5, 0.5],
+    }
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/rmq1/control?device_id=" + device.device_id,
+            headers={"origin": "http://testserver"},
+        ) as ws:
+            ws.send_json(message)
+            ws.send_json(message)
+            assert ws.receive_json()["outcome"] == "completed"
+            assert device.device_id not in manager._manual_owners
+    assert not device.transport.socket.sent
