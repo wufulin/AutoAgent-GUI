@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from .tools import PHYSICAL_TOOL_NAMES
+
 
 class InvalidToolCallError(ValueError):
     """Raised when a model tool call cannot be mapped to a device action."""
@@ -37,7 +39,12 @@ def _require_str(args: dict[str, Any], key: str) -> str:
     return val
 
 
-def tool_call_to_action(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def tool_call_to_action(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    independent_verification: bool = False,
+) -> dict[str, Any]:
     """Convert a function call to an ActionHandler-compatible action dict.
 
     Args:
@@ -47,14 +54,23 @@ def tool_call_to_action(tool_name: str, arguments: dict[str, Any]) -> dict[str, 
     Returns:
         Action dict compatible with ActionHandler.execute().
     """
-    if tool_name == "finish":
-        return {
-            "_metadata": "finish",
-            "message": arguments.get("message", "Task completed"),
-        }
-
     try:
-        return _build_action(tool_name, arguments)
+        if "verify_after" in arguments:
+            if not independent_verification or tool_name not in PHYSICAL_TOOL_NAMES:
+                raise ValueError(
+                    "verify_after requires an independently verified physical action"
+                )
+            if type(arguments["verify_after"]) is not bool:
+                raise ValueError("Expected boolean for 'verify_after'")
+        if tool_name == "finish":
+            return {
+                "_metadata": "finish",
+                "message": arguments.get("message", "Task completed"),
+            }
+        action = _build_action(tool_name, arguments)
+        if "verify_after" in arguments:
+            action["verify_after"] = arguments["verify_after"]
+        return action
     except (ValueError, KeyError) as e:
         raise InvalidToolCallError(tool_name, arguments, str(e)) from e
 

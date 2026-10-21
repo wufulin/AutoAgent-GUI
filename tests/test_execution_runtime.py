@@ -348,7 +348,9 @@ def test_explicit_skill_honors_additional_task_criteria_and_constraints(monkeypa
     from tests.test_skill_execution import skill
 
     _, agent, _, timeline = setup(
-        monkeypatch, [[event("done", success=True)]], verdicts=["met", "met", "unmet"]
+        monkeypatch,
+        [[event("done", success=True)]],
+        verdicts=[{"extra user condition": "unmet"}],
     )
     compiled = skill()
     monkeypatch.setattr(
@@ -365,5 +367,10 @@ def test_explicit_skill_honors_additional_task_criteria_and_constraints(monkeypa
     )
     events = asyncio.run(collect(run_for(request)))
     assert events[-1]["payload"]["result_status"] == "blocked"
-    assert timeline[-1][2] == ["extra user condition"]
+    assert timeline[-1][2] == [
+        "first condition",
+        "overall condition",
+        "extra user condition",
+    ]
+    assert len([item for item in timeline if item[0] == "verify"]) == 1
     assert "do not submit" in agent.context[0]
