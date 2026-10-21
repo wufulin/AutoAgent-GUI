@@ -127,6 +127,17 @@ async def disconnect(request: DeviceRequest) -> dict[str, bool]:
         raise safe_error(error) from None
 
 
+@router.post("/reconnect")
+def reconnect(request: DeviceRequest) -> dict[str, Any]:
+    try:
+        session_id = DeviceManager.get_instance().reconnect_rmq1_device(
+            request.device_id
+        )
+        return {"success": True, "session_id": session_id}
+    except Exception as error:
+        raise safe_error(error) from None
+
+
 @router.post("/observe")
 def observe(request: DeviceRequest) -> dict[str, Any]:
     try:

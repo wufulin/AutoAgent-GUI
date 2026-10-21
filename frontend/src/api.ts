@@ -1532,6 +1532,7 @@ export async function rmq1Request<T = { success: boolean }>(
     | 'probe'
     | 'connect'
     | 'disconnect'
+    | 'reconnect'
     | 'observe'
     | 'gesture'
     | 'recover',
@@ -1540,7 +1541,7 @@ export async function rmq1Request<T = { success: boolean }>(
   const controller = new AbortController();
   const timer = window.setTimeout(
     () => controller.abort(),
-    operation === 'connect' ? 45000 : 15000
+    operation === 'connect' || operation === 'reconnect' ? 45000 : 15000
   );
   try {
     const response = await axios.post<T>(`/api/rmq1/${operation}`, body, {

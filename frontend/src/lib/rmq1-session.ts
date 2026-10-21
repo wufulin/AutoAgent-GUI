@@ -121,7 +121,7 @@ export function useRmq1Session(deviceId: string, visible: boolean) {
       setError(
         next.error || (unknown ? '操作结果未知' : '操作未执行，请等待新画面')
       );
-    }
+    } else setError('');
     setStatus(unknown ? '需要核对手机' : '操作已释放，等待新画面');
   }, []);
 
@@ -262,6 +262,7 @@ export function useRmq1Session(deviceId: string, visible: boolean) {
     let disposed = false;
     let lastGeometry = '';
     let rendered = 0;
+    let failure = '';
     const socket = new WebSocket(socketUrl('preview', deviceId));
     preview.current = socket;
     queueMicrotask(() => {
@@ -296,7 +297,7 @@ export function useRmq1Session(deviceId: string, visible: boolean) {
         const decoded = new Image();
         decoded.src = frameSource(next);
         await decoded.decode();
-        if (disposed) return;
+        if (disposed || socket.readyState !== WebSocket.OPEN) return;
         if (
           decoded.naturalWidth !== next.width ||
           decoded.naturalHeight !== next.height
@@ -322,7 +323,8 @@ export function useRmq1Session(deviceId: string, visible: boolean) {
         if (!disposed) {
           cancel();
           loaded.current = null;
-          setObserveError(getErrorMessage(error));
+          failure = getErrorMessage(error);
+          setObserveError(failure);
           setStatus('画面不可用');
           socket.close();
         }
@@ -332,7 +334,7 @@ export function useRmq1Session(deviceId: string, visible: boolean) {
       if (disposed) return;
       cancel();
       loaded.current = null;
-      setObserveError('实时画面已断开，请重新连接');
+      setObserveError(failure || '实时画面已断开，请重新连接');
       setStatus('画面不可用');
     };
     return () => {
@@ -375,7 +377,8 @@ export function useRmq1Session(deviceId: string, visible: boolean) {
     wheelPending.current = { delta: 0, at: 0, axis: 'y' };
     busyRef.current = true;
     setBusy(true);
-    setError('');
+    // Keep the error area's height stable until input is released. Clearing
+    // it here resizes the phone stage and cancels this very gesture.
     waitingStart.current = { frame, point };
     // A click during the render ACK round trip waits briefly for that exact
     // displayed frame, rather than silently dropping the user's press.
@@ -427,7 +430,6 @@ export function useRmq1Session(deviceId: string, visible: boolean) {
       queued.delta = 0;
       busyRef.current = true;
       setBusy(true);
-      setError('');
       wheelPlan.current = { start, end };
       if (
         !control.current?.begin(
@@ -451,9 +453,23 @@ export function useRmq1Session(deviceId: string, visible: boolean) {
       !connected ||
       uncertainRef.current ||
       !frame ||
+      delta === 0 ||
       !Number.isFinite(delta)
     )
       return;
+    const plan = wheelPlan.current;
+    if (plan) {
+      const activeAxis = plan.start[0] === plan.end[0] ? 'y' : 'x';
+      const index = activeAxis === 'x' ? 0 : 1;
+      if (
+        axis !== activeAxis ||
+        Math.sign(delta) !== Math.sign(plan.start[index] - plan.end[index])
+      ) {
+        // Release the old drag instead of finishing motion in a direction
+        // the user has already reversed. Queue only the new wheel intent.
+        cancel();
+      }
+    }
     const pending = wheelPending.current;
     if (
       performance.now() - pending.at > 250 ||
@@ -495,6 +511,31 @@ export function useRmq1Session(deviceId: string, visible: boolean) {
     }
   };
 
+  const reconnect = async () => {
+    if (busyRef.current || uncertainRef.current) return;
+    const current = generation.current;
+    busyRef.current = true;
+    setBusy(true);
+    setError('');
+    loaded.current = null;
+    authorized.current.clear();
+    wheelPending.current = { delta: 0, at: 0, axis: 'y' };
+    window.clearTimeout(wheelTimer.current);
+    try {
+      await rmq1Request('reconnect', { device_id: deviceId });
+      if (generation.current !== current) return;
+      setObserveError('');
+      setAttempt(value => value + 1);
+    } catch (error) {
+      if (generation.current === current) setError(getErrorMessage(error));
+    } finally {
+      if (generation.current === current) {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    }
+  };
+
   return {
     frame,
     busy,
@@ -517,9 +558,6 @@ export function useRmq1Session(deviceId: string, visible: boolean) {
     cancel,
     wheel,
     recover,
-    reconnect: () => {
-      cancel();
-      setAttempt(value => value + 1);
-    },
+    reconnect,
   };
 }
