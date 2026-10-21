@@ -264,6 +264,18 @@ class LiveGesture:
                         control.close()
                     except Exception:
                         pass
+            elif isinstance(error, _Cancelled):
+                # Cancellation during validation/preparation is a completed
+                # no-input operation, not a device failure. Preserve its ID
+                # so a repeated DOWN cannot turn that cancellation into input.
+                result.update(
+                    success=True,
+                    outcome="completed",
+                    cancelled=True,
+                    receipt_scope="no_input",
+                    recovery_required=device.recovery_required,
+                )
+                device._actions[self.action_id] = (signature, result.copy())
             else:
                 result["error"] = (
                     str(error)
