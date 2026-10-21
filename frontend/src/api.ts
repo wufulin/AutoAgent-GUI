@@ -979,6 +979,22 @@ export type SubtaskStatus =
   | 'needs_user'
   | 'unknown';
 
+export interface VerificationDiagnostics {
+  stage: 'capture' | 'request' | 'response' | 'parse' | 'criteria';
+  max_tokens: number;
+  finish_reason?: string | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  response_chars?: number | null;
+  response_sha256?: string | null;
+  request_id_sha256?: string | null;
+  error_type?: string | null;
+  validation_errors: { path: string; type: string }[];
+  mismatched_criteria: number[];
+}
+
 export interface SubtaskResult {
   subtask_id: string;
   goal: string;
@@ -997,6 +1013,8 @@ export interface SubtaskResult {
     facts: string[];
     observed_at?: string;
     screenshot_sha256?: string;
+    error?: string | null;
+    diagnostics?: VerificationDiagnostics | null;
   } | null;
   checkpoint?: string | null;
 }

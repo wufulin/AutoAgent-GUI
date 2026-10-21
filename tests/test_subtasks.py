@@ -17,7 +17,6 @@ from AutoGLM_GUI.subtasks import (
     SubtaskRunContext,
     Verification,
     collect_execution,
-    verify_completion,
 )
 
 
@@ -301,76 +300,124 @@ def test_cancel_during_verification_clears_checkpoint_and_releases_after_drain(
 
 
 @pytest.mark.parametrize(
-    "content,status",
+    "error",
     [
-        (
-            '{"criteria":[{"criterion":"title","verdict":"met","reason":"seen"}],"facts":["title"]}',
-            "met",
-        ),
-        (
-            '{"criteria":[{"criterion":"title","verdict":"unmet","reason":"absent"}],"facts":[]}',
-            "unmet",
-        ),
-        (
-            '{"criteria":[{"criterion":"title","verdict":"unknown","reason":"hidden"}],"facts":[]}',
-            "unknown",
-        ),
-        ('{"criteria":[],"facts":[]}', "invalid"),
-        (
-            '{"criteria":[{"criterion":"wrong","verdict":"met","reason":"seen"}],"facts":[]}',
-            "invalid",
-        ),
-        ("not-json", "invalid"),
+        "verification_output_truncated",
+        "verification_response_incomplete",
+        "verification_response_empty",
+        "verification_json_invalid",
+        "verification_schema_invalid",
+        "verification_criteria_mismatch",
+        "verification_request_failed",
+        "verification_timeout",
+        "verification_screenshot_unavailable",
+        "verification_unavailable",
     ],
 )
-def test_verifier_uses_fresh_image_no_tools_and_strict_conditions(
-    monkeypatch, content, status
-):
-    response = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+def test_verification_failure_blocks_subtask_without_checkpoint(monkeypatch, error):
+    context, agent, _ = setup_context(
+        monkeypatch, [[event("step"), event("done", success=True)]]
     )
-    create = AsyncMock(return_value=response)
-    client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    monkeypatch.setattr(
+        subtasks,
+        "verify_completion",
+        AsyncMock(
+            return_value=Verification(
+                criteria=[],
+                facts=[],
+                observed_at="2026-01-01T00:00:00+00:00",
+                screenshot_sha256="frame-digest",
+                error=error,
+            )
+        ),
+    )
+
+    async def scenario():
+        result = await context.execute("phone", "goal", ["title"], [])
+        assert result.status == "blocked" and result.success is False
+        assert result.stop_reason == error
+        assert result.verification.error == error
+        assert result.steps == 1 and result.total_steps == 1
+        assert result.checkpoint is None and not context.checkpoints
+        assert context.final_result() == (False, "blocked", error)
+        envelope = json.loads(result.envelope())
+        assert envelope["success"] is False
+        assert envelope["result"]["stop_reason"] == error
+        rejected = await context.execute("phone", "goal", ["title"], [])
+        assert rejected.stop_reason == "task_not_active"
+        assert len(agent.feedback) == 1
+        await context.close()
+
+    asyncio.run(scenario())
+
+
+def test_real_verifier_truncation_after_finish_blocks_task_using_fresh_frame(
+    monkeypatch,
+):
+    context, agent, _ = setup_context(
+        monkeypatch,
+        [
+            [
+                event("step", screenshot="stale-execution-image"),
+                event("done", success=True),
+            ]
+        ],
+    )
+    screenshot = agent.device.get_screenshot.return_value
+
+    async def capture():
+        assert agent.step_count == 1
+        return screenshot
+
+    agent.device.get_screenshot.side_effect = capture
+    create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="length",
+                    message=SimpleNamespace(
+                        content='{"criteria":[{"criterion":"title","verdict":"met","reason":"seen"}],"facts":[]}'
+                    ),
+                )
+            ],
+            usage=None,
+        )
     )
 
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs["max_retries"] == 0
+            pass
 
         async def __aenter__(self):
-            return client
+            return SimpleNamespace(
+                chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+            )
 
         async def __aexit__(self, *args):
             pass
 
     monkeypatch.setattr(subtasks, "AsyncOpenAI", Client)
-    agent = FakeAgent([])
-    result = asyncio.run(
-        verify_completion(agent.device, agent.model_config, "goal", ["title"])
-    )
-    agent.device.get_screenshot.assert_awaited_once()
-    request = create.call_args.kwargs
-    assert "tools" not in request
-    assert "fresh-frame" not in result.model_dump_json()
-    assert request["messages"][1]["content"][0]["image_url"]["url"].endswith(
-        base64.b64encode(b"fresh-frame").decode()
-    )
-    assert result.screenshot_sha256
-    if status == "invalid":
-        assert result.error == "verification_unavailable"
-    else:
-        assert result.criteria[0].verdict == status and result.error is None
 
+    async def scenario():
+        result = await context.execute("phone", "goal", ["title"], [])
+        assert result.status == "blocked"
+        assert result.stop_reason == "verification_output_truncated"
+        assert result.verification.error == "verification_output_truncated"
+        assert result.checkpoint is None
+        assert context.final_result() == (
+            False,
+            "blocked",
+            "verification_output_truncated",
+        )
+        agent.device.get_screenshot.assert_awaited_once()
+        create.assert_awaited_once()
+        request = create.call_args.kwargs
+        image = request["messages"][1]["content"][0]["image_url"]["url"]
+        assert image.endswith(screenshot.base64_data)
+        assert "stale-execution-image" not in json.dumps(request)
+        await context.close()
 
-def test_verifier_request_failure_is_not_completion(monkeypatch):
-    agent = FakeAgent([])
-    agent.device.get_screenshot.side_effect = TimeoutError("private-provider-detail")
-    result = asyncio.run(
-        verify_completion(agent.device, agent.model_config, "goal", ["title"])
-    )
-    assert result.error == "verification_unavailable"
-    assert "private-provider-detail" not in result.model_dump_json()
+    asyncio.run(scenario())
 
 
 def test_planner_natural_completion_cannot_override_partial(monkeypatch):
