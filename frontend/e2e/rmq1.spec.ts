@@ -110,6 +110,8 @@ async function mockLive(page: Page) {
     activeMarker: false,
     holdResult: false,
     holdStarted: false,
+    previewCloses: 0,
+    previewSocket: null as WebSocketRoute | null,
     socket: null as WebSocketRoute | null,
     result(message: LiveMessage) {
       this.socket?.send(
@@ -128,6 +130,7 @@ async function mockLive(page: Page) {
     route.fulfill({ json: { devices: [device] } })
   );
   await page.routeWebSocket(/\/api\/rmq1\/preview\?/, ws => {
+    fixture.previewSocket = ws;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let closed = false;
     const send = () => {
@@ -162,6 +165,7 @@ async function mockLive(page: Page) {
       timer = setTimeout(send, 50);
     });
     ws.onClose(() => {
+      fixture.previewCloses++;
       closed = true;
       clearTimeout(timer);
     });
@@ -260,6 +264,84 @@ test('waits for render authorization and blocks repeat input after an unknown re
   await expect(
     page.getByRole('button', { name: '我已核对手机状态、释放按键，恢复控制' })
   ).not.toBeVisible();
+});
+
+test('explicit reconnect rebuilds the device before reopening browser sockets', async ({
+  page,
+}) => {
+  const live = await mockLive(page);
+  const phone = await openPhone(page);
+  let reconnects = 0;
+  let allowReconnect: (() => void) | undefined;
+  const held = new Promise<void>(resolve => {
+    allowReconnect = resolve;
+  });
+  await page.route('**/api/rmq1/reconnect', async route => {
+    expect(route.request().postDataJSON()).toEqual({
+      device_id: device.serial,
+    });
+    reconnects++;
+    await held;
+    return route.fulfill({
+      json: { success: true, session_id: 'b'.repeat(32) },
+    });
+  });
+  await page.getByRole('button', { name: '显示设置', exact: true }).click();
+  const reconnect = page.getByRole('button', { name: '复位输入并重新连接' });
+  await reconnect.click();
+  await expect.poll(() => reconnects).toBe(1);
+  await expect(reconnect).toBeDisabled();
+  await phone.click();
+  expect(live.messages).toHaveLength(0);
+  allowReconnect?.();
+  await expect(reconnect).toBeEnabled();
+  await phone.click();
+  await expect.poll(() => live.messages.at(-1)?.type).toBe('up');
+  expect(reconnects).toBe(1);
+});
+
+test('reports reconnect errors and blocks reset for unknown input', async ({
+  page,
+}) => {
+  const live = await mockLive(page);
+  const phone = await openPhone(page);
+  let reconnects = 0;
+  await page.route('**/api/rmq1/reconnect', route => {
+    reconnects++;
+    return route.fulfill({
+      status: 409,
+      json: { detail: 'RMQ1 登录已过期，请重新登录' },
+    });
+  });
+  await page.getByRole('button', { name: '显示设置', exact: true }).click();
+  const reconnect = page.getByRole('button', { name: '复位输入并重新连接' });
+  await reconnect.click();
+  await expect(page.getByRole('alert')).toContainText('登录已过期');
+  await expect(reconnect).toBeEnabled();
+  expect(reconnects).toBe(1);
+  // Reconnect invalidates the old authorization, even on failure. The next
+  // input must use a newly displayed and acknowledged frame.
+  const readyAfterFailure = live.ready;
+  await expect.poll(() => live.ready).toBeGreaterThan(readyAfterFailure + 1);
+  live.unknown = true;
+  await phone.click();
+  await expect(page.getByRole('alert')).toContainText('操作结果未知');
+  await expect(reconnect).toBeDisabled();
+  expect(reconnects).toBe(1);
+});
+
+test('preserves the device failure when the preview socket closes', async ({
+  page,
+}) => {
+  const live = await mockLive(page);
+  await openPhone(page);
+  live.previewSocket?.send(
+    JSON.stringify({ type: 'error', error: 'RMQ1 控制通道已断开，请重新连接' })
+  );
+  await expect.poll(() => live.previewCloses).toBe(1);
+  await expect(page.getByRole('alert')).toHaveText(
+    'RMQ1 控制通道已断开，请重新连接'
+  );
 });
 
 test('cancels outside the crop, on resize and on blur without replay', async ({
@@ -420,6 +502,44 @@ test('cancels a queued quick tap after up and a wheel gesture before started', a
   expect(live.messages.filter(message => message.type === 'up')).toHaveLength(
     1
   );
+});
+
+test('cancels an in-flight wheel drag when the user reverses direction', async ({
+  page,
+}) => {
+  const live = await mockLive(page);
+  live.holdStarted = true;
+  const phone = await openPhone(page);
+  await expect.poll(() => live.ready).toBeGreaterThan(1);
+  await phone.dispatchEvent('wheel', { deltaY: 100 });
+  await expect.poll(() => live.messages[0]?.type).toBe('down');
+  const first = live.messages[0];
+  live.holdStarted = false;
+  await phone.dispatchEvent('wheel', { deltaY: -100 });
+  await expect
+    .poll(
+      () =>
+        live.messages.find(
+          message =>
+            message.action_id === first.action_id && message.type === 'cancel'
+        ),
+      { timeout: 1000 }
+    )
+    .toBeTruthy();
+  await expect
+    .poll(() => live.messages.filter(message => message.type === 'up').length)
+    .toBe(1);
+  const next = live.messages.find(
+    message => message.type === 'down' && message.action_id !== first.action_id
+  );
+  const up = live.messages.find(message => message.type === 'up');
+  expect(next?.action_id).toBe(up?.action_id);
+  expect(next?.point?.[1]).toBeLessThan(up?.point?.[1] ?? 0);
+  expect(
+    live.messages.some(
+      message => message.action_id === first.action_id && message.type === 'up'
+    )
+  ).toBe(false);
 });
 
 test('ignores an active marker and cancels same-size orientation changes', async ({

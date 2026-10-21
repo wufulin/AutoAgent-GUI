@@ -398,7 +398,11 @@ export function DeviceCard({
                 }}
                 disabled={loading}
                 className="h-6 w-6 text-slate-400 hover:text-red-500"
-                title={t.deviceCard.removeRemote || '移除远程设备'}
+                title={
+                  isRmq1
+                    ? '断开 RMQ1 连接'
+                    : t.deviceCard.removeRemote || '移除远程设备'
+                }
               >
                 {loading ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />

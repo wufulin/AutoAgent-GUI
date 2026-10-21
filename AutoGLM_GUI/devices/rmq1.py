@@ -582,21 +582,54 @@ class RMQ1Device:
         finally:
             self._operation.release()
 
+    def _close_channels(self) -> None:
+        self._stop.set()
+        with self._frames_lock:
+            self._frames_lock.notify_all()
+        if self._control:
+            self._control.close()
+        if self._control_worker:
+            self._control_worker.join(timeout=4)
+        if self._video:
+            self._video.close()
+        if self._worker:
+            self._worker.join(timeout=6)
+        with self._frames_lock:
+            self._latest = None
+            self._observed.clear()
+
+    def reconnect(self) -> RMQ1Device:
+        """Explicit idle recovery; preserve auth and never replay input."""
+        if not self._operation.acquire(blocking=False):
+            raise RMQ1Error("另一个操作正在执行，请等待释放后重新连接")
+        replacement = None
+        try:
+            if self.recovery_required:
+                raise RMQ1Error("上次操作结果未知，请先核对手机并恢复控制")
+            # Stop the old generation before resetting either USB HID endpoint.
+            # Hybrid mouse readiness reports only the absolute endpoint; after
+            # an interruption its button endpoint may need an explicit reset.
+            self._close_channels()
+            reset, _ = self.transport.request("/api/hid/reset", form={})
+            if not isinstance(reset, dict) or reset.get("ok") is not True:
+                raise RMQ1Error("RMQ1 输入复位未完成，请断开后重新登录")
+            replacement = RMQ1Device(self.transport, self._marker.parent)
+            replacement.start()
+            return replacement
+        except BaseException:
+            if replacement is not None:
+                replacement._close_channels()
+            # Keep only the existing in-memory auth for an explicit retry.
+            # Expired auth still requires disconnecting and logging in again.
+            raise
+        finally:
+            self._operation.release()
+
     def close(self) -> None:
         # Signal active input before waiting for the operation lock.
         self._stop.set()
         with self._frames_lock:
             self._frames_lock.notify_all()
         with self._operation:
-            if self._control:
-                self._control.close()
-            if self._control_worker:
-                self._control_worker.join(timeout=4)
-            if self._video:
-                self._video.close()
-            if self._worker:
-                self._worker.join(timeout=6)
+            self._close_channels()
             self.transport.close()
-            with self._frames_lock:
-                self._latest = None
-                self._observed.clear()

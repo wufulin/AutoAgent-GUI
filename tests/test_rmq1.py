@@ -698,6 +698,124 @@ def test_manager_preserves_rmq1_and_blocks_android_dispatch(monkeypatch, tmp_pat
     assert not manager.get_devices()
 
 
+def test_reconnect_replaces_generation_resets_hid_and_retains_auth(device, monkeypatch):
+    old_frame = device.observe()
+    old_control = device._control
+    device.transport.request = Mock(return_value=({"ok": True}, None))
+    device.transport.close = Mock()
+    device._issue = "RMQ1 控制通道已断开，请重新连接"
+
+    def start(replacement):
+        assert old_control.closed
+        assert device._stop.is_set()
+        device.transport.request.assert_called_once_with("/api/hid/reset", form={})
+        replacement.check_hid()
+        replacement._latest = (time.monotonic(), "image", 1920, 1080)
+        replacement._control = FakeSocket()
+
+    monkeypatch.setattr(RMQ1Device, "start", start)
+    replacement = device.reconnect()
+    assert replacement.online
+    assert replacement.session_id != old_frame["session_id"]
+    assert replacement._marker == device._marker
+    assert replacement._actions == {}
+    assert not replacement.recovery_required
+    assert old_control.sent == []  # No replay of the previous gesture.
+    device.transport.close.assert_not_called()
+    with pytest.raises(RMQ1Error, match="失效"):
+        replacement._validate_frame(old_frame["session_id"], old_frame["frame_id"])
+    replacement.close()
+    device.transport.close.assert_called_once()
+
+
+@pytest.mark.parametrize("blocked_by", ["active", "unknown"])
+def test_reconnect_refuses_inflight_or_unknown_without_reset(device, blocked_by):
+    device.transport.request = Mock()
+    if blocked_by == "active":
+        device._operation.acquire()
+    else:
+        device._persist_marker("original-unknown-id")
+    try:
+        with pytest.raises(RMQ1Error, match="执行|未知"):
+            device.reconnect()
+        device.transport.request.assert_not_called()
+        assert not device._control.closed
+        assert not device._stop.is_set()
+        if blocked_by == "unknown":
+            assert device._marker.read_text() == "original-unknown-id"
+    finally:
+        if blocked_by == "active":
+            device._operation.release()
+
+
+def test_failed_reconnect_stops_replacement_and_does_not_retry(device, monkeypatch):
+    device.transport.request = Mock(return_value=({"ok": True}, None))
+    device.transport.close = Mock()
+    replacements = []
+
+    def start(replacement):
+        replacements.append(replacement)
+        replacement._control = FakeSocket()
+        raise RMQ1Error("未收到 RMQ1 画面")
+
+    monkeypatch.setattr(RMQ1Device, "start", start)
+    with pytest.raises(RMQ1Error, match="未收到"):
+        device.reconnect()
+    assert len(replacements) == 1
+    assert replacements[0]._control.closed
+    assert replacements[0]._stop.is_set()
+    assert not device.online
+    assert not device.recovery_required
+    device.transport.request.assert_called_once_with("/api/hid/reset", form={})
+    device.transport.close.assert_not_called()
+    assert device._operation.acquire(blocking=False)
+    device._operation.release()
+
+
+def test_reconnect_requires_successful_hid_reset_before_start(device, monkeypatch):
+    device.transport.request = Mock(return_value=({"ok": False}, None))
+    start = Mock()
+    monkeypatch.setattr(RMQ1Device, "start", start)
+    with pytest.raises(RMQ1Error, match="复位未完成"):
+        device.reconnect()
+    start.assert_not_called()
+    assert not device.online
+    assert not device.recovery_required
+
+
+def test_manager_reconnect_keeps_registration_and_api_redacts_errors(
+    device, monkeypatch, tmp_path
+):
+    from AutoGLM_GUI.device_metadata_manager import DeviceMetadataManager
+
+    monkeypatch.setattr(
+        DeviceMetadataManager, "get_instance", lambda: DeviceMetadataManager(tmp_path)
+    )
+    manager = DeviceManager()
+    replacement = Mock(session_id="b" * 32)
+    device.reconnect = Mock(return_value=replacement)
+    manager._rmq1_devices[device.device_id] = device
+    registration = Mock()
+    manager._devices[device.device_id] = registration
+    monkeypatch.setattr(DeviceManager, "get_instance", lambda: manager)
+    app = FastAPI()
+    app.include_router(api.router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/rmq1/reconnect", json={"device_id": device.device_id}
+        )
+        assert response.json() == {"success": True, "session_id": "b" * 32}
+        assert manager.get_rmq1_device(device.device_id) is replacement
+        assert manager._devices[device.device_id] is registration
+        replacement.reconnect.side_effect = OSError("private credential")
+        failure = client.post(
+            "/api/rmq1/reconnect", json={"device_id": device.device_id}
+        )
+        assert failure.status_code == 409
+        assert "private credential" not in failure.text
+        assert manager.get_rmq1_device(device.device_id) is replacement
+
+
 def live_gesture(device, **overrides):
     from AutoGLM_GUI.devices.rmq1_live import LiveGesture
     import queue

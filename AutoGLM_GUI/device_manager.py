@@ -926,6 +926,15 @@ class DeviceManager:
                 raise RMQ1Error("RMQ1 未连接")
             return device
 
+    def reconnect_rmq1_device(self, device_id: str) -> str:
+        """Replace an idle RMQ1 session without forgetting recovery state."""
+        with self._rmq1_connect_lock:
+            device = self.get_rmq1_device(device_id)
+            replacement = device.reconnect()
+            with self._devices_lock:
+                self._rmq1_devices[device_id] = replacement
+            return replacement.session_id
+
     def remove_rmq1_device(self, device_id: str) -> None:
         with self._rmq1_connect_lock:
             device = self.get_rmq1_device(device_id)

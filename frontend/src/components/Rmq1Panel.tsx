@@ -323,15 +323,15 @@ export function Rmq1Panel({
         <p className="text-xs text-muted-foreground">
           点击、按住拖动或使用滚轮 / 触控板滚动。单次按住最多 1.5 秒。
         </p>
-        {(!session.connected || observeError) && (
+        {(!session.connected || observeError || showSettings) && (
           <Button
             variant="outline"
             size="sm"
             className="mt-2"
-            disabled={busy}
+            disabled={busy || uncertain}
             onClick={session.reconnect}
           >
-            重新连接画面与控制
+            复位输入并重新连接
           </Button>
         )}
         {(error || observeError) && (
