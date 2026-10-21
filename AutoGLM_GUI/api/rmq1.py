@@ -420,6 +420,12 @@ async def control_socket(websocket: WebSocket) -> None:
                         ),
                     )
                     if cached is not None:
+                        if active is not None and active.done.is_set():
+                            await _settle_manual(
+                                device.device_id,
+                                f"rmq1-live:{active.action_id}",
+                                {"recovery_required": device.recovery_required},
+                            )
                         await send({"type": "result", **cached})
                         continue
                     if active is not None and not active.done.is_set():
