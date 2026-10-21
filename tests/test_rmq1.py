@@ -862,6 +862,44 @@ def test_live_quick_up_preserves_down_minimum_and_latest_final_point(device):
     assert not device.recovery_required
 
 
+def test_live_cancel_before_input_completes_without_effect_and_cannot_replay(
+    device, monkeypatch
+):
+    import threading
+
+    validating = threading.Event()
+    release_validation = threading.Event()
+    validate = device._validate_frame
+
+    def delayed_validate(session_id, frame_id):
+        frame = validate(session_id, frame_id)
+        validating.set()
+        assert release_validation.wait(2)
+        return frame
+
+    monkeypatch.setattr(device, "_validate_frame", delayed_validate)
+    live, messages = live_gesture(device)
+    live.start()
+    assert validating.wait(2)
+    live.cancel()
+    release_validation.set()
+    result = messages.get(timeout=2)
+    live.join()
+    assert result["success"] and result["cancelled"]
+    assert result["outcome"] == "completed"
+    assert result["receipt_scope"] == "no_input"
+    assert not result["recovery_required"]
+    assert device.transport.socket.sent == []
+    assert not device.recovery_required
+    repeated, repeated_messages = live_gesture(
+        device, action_id=live.action_id, frame_id=live.frame_id
+    )
+    repeated.start()
+    assert repeated_messages.get(timeout=2) == result
+    repeated.join()
+    assert device.transport.socket.sent == []
+
+
 def test_live_moves_coalesce_without_losing_up(device):
     live, messages = live_gesture(device)
     live.start()
