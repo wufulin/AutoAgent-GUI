@@ -272,6 +272,44 @@ def test_cache_expires_and_is_single_use(monkeypatch):
     assert agent._take_cached_observation() is None
 
 
+def test_continuous_search_reuses_observations_without_skipping_action_guards(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "AutoGLM_GUI.agents.gemini.async_agent.phone_agent_replay_active", lambda: True
+    )
+
+    async def run():
+        agent = _Agent(
+            [
+                ("back", {}),
+                ("back", {}),
+                ("back", {}),
+                ("tap", {"x": 220, "y": 67}),
+                ("tap", {"x": 250, "y": 200}),
+                ("tap", {"x": 450, "y": 114}),
+                ("type_text", {"text": "霸王茶姬"}),
+                ("tap", {"x": 887, "y": 75}),
+                ("tap", {"x": 254, "y": 125}),
+                ("wait", {"duration": 3}),
+                ("finish", {"message": "申请商户列表验收"}),
+            ]
+        )
+        agent.agent_config.max_steps = 20
+        events = [event async for event in agent.stream("continuous search")]
+        return agent, events
+
+    agent, events = asyncio.run(run())
+    # One initial + ten pre-action + ten post-action frames. The independent
+    # verifier captures its own final frame outside the executor (22 in total).
+    assert agent.fake_device.captures == 21
+    assert agent.action_handler.execute.await_count == 11
+    assert not agent.calls
+    assert events[-1]["data"]["status"] == "completion_requested"
+    assert events[-1]["data"]["stop_reason"] != "verification_requested"
+    assert agent._cached_observation is None
+
+
 @pytest.mark.parametrize("frame", [_shot(sensitive=True), Screenshot("", 0, 400)])
 def test_sensitive_and_invalid_frames_are_not_reused(frame):
     import time

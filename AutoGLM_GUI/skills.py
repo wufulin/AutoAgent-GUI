@@ -390,14 +390,24 @@ class SkillManager:
     def __init__(self, path: Path | None = None):
         self.path = path or Path.home() / ".config" / "autoglm" / "skills.json"
         self._lock = RLock()
-        builtin_path = Path(__file__).parent / "resources" / "skills" / "dianping.json"
+        builtin_root = Path(__file__).parent / "resources" / "skills"
         definitions = [
             *_builtins(),
-            SkillDefinition.model_validate_json(
-                builtin_path.read_text(encoding="utf-8")
+            *(
+                SkillDefinition.model_validate_json(
+                    (builtin_root / name).read_text(encoding="utf-8")
+                )
+                for name in ("dianping.json", "dianping_v2.json")
             ),
         ]
-        self._builtins = {skill.id: skill for skill in definitions}
+        # Keep pinned built-in revisions executable while discovery offers only
+        # the latest version. Never migrate existing scheduled-task bindings.
+        self._builtin_revisions = tuple(definitions)
+        self._builtins: dict[str, SkillDefinition] = {}
+        for skill in definitions:
+            previous = self._builtins.get(skill.id)
+            if previous is None or skill.version > previous.version:
+                self._builtins[skill.id] = skill
 
     @contextmanager
     def _write_lock(self) -> Iterator[None]:
@@ -539,7 +549,7 @@ class SkillManager:
         self, skill_id: str, version: int | None = None
     ) -> SkillDefinition | None:
         with self._lock:
-            skills = [*self._builtins.values(), *self._load()]
+            skills = [*self._builtin_revisions, *self._load()]
             candidates = [
                 skill
                 for skill in skills

@@ -120,6 +120,67 @@ def skill(*, preconditions=None, steps=None, max_resumes=1):
     ).compile({})
 
 
+@pytest.mark.parametrize("city, shop_name", [("广州", "霸王茶姬"), ("深圳", "古茗")])
+def test_continuous_dianping_keeps_one_executor_and_final_verification(
+    monkeypatch, tmp_path, city, shop_name
+):
+    context, agent, manager, timeline = setup(
+        monkeypatch,
+        [[*[event("step") for _ in range(11)], event("done", success=True)]],
+    )
+    compiled = SkillManager(tmp_path / "skills.json").compile_skill(
+        "dianping_search_shops", 2, {"city": city, "shop_name": shop_name}
+    )
+
+    async def scenario():
+        result = await execute_skill(
+            context,
+            "phone",
+            compiled,
+            task_goal="只搜索商户",
+            task_criteria=["额外的任务完成条件"],
+        )
+        assert result.success
+        assert context.total_steps == 11
+        assert context.final_result() == (True, "completed", "goal_verified")
+        await context.close()
+
+    asyncio.run(scenario())
+    assert [item[0] for item in timeline] == ["execute", "verify"]
+    assert agent.resets == 1
+    assert manager.acquire_device_lease.await_count == 1
+    assert timeline[-1][2] == [
+        *compiled.steps[0].success_criteria,
+        *compiled.success_criteria,
+        "额外的任务完成条件",
+    ]
+
+
+@pytest.mark.parametrize("verdict", ["unmet", "unknown"])
+def test_continuous_dianping_never_replays_or_succeeds_after_failed_final_check(
+    monkeypatch, tmp_path, verdict
+):
+    context, agent, _, timeline = setup(
+        monkeypatch,
+        [[event("step"), event("done", success=True)]],
+        verdicts=[verdict],
+    )
+    compiled = SkillManager(tmp_path / "skills.json").compile_skill(
+        "dianping_search_shops", 2, {"city": "广州", "shop_name": "霸王茶姬"}
+    )
+
+    async def scenario():
+        result = await execute_skill(context, "phone", compiled)
+        assert not result.success
+        assert context.final_result()[0] is False
+        await context.close()
+
+    asyncio.run(scenario())
+    assert [item[0] for item in timeline] == ["execute", "verify"]
+    assert agent.resets == 1
+    assert context.continuations == 0
+
+
 def test_skill_checks_preconditions_each_stage_and_final_goal(monkeypatch):
     context, agent, manager, timeline = setup(
         monkeypatch,

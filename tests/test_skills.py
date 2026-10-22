@@ -205,7 +205,7 @@ def test_dianping_builtin_and_legacy_revisions_coexist_without_rewriting(tmp_pat
     original = path.read_bytes()
     manager = SkillManager(path)
     builtin = manager.get_skill("dianping_search_shops")
-    assert builtin is not None and builtin.builtin and builtin.version == 1
+    assert builtin is not None and builtin.builtin and builtin.version == 2
     assert builtin.app is not None and builtin.app.id == "dianping"
     assert builtin.icon == "search" and builtin.platforms == ["android"]
     assert (builtin.max_steps, builtin.max_seconds) == (40, 600)
@@ -215,6 +215,18 @@ def test_dianping_builtin_and_legacy_revisions_coexist_without_rewriting(tmp_pat
     assert '"广州"' in compiled.goal and '"霸王茶姬"' in compiled.goal
     assert len(compiled.steps) == 4
     assert all(step.effect == "navigation" for step in compiled.steps)
+    continuous = manager.compile_skill(
+        builtin.id, 2, {"city": "广州", "shop_name": "霸王茶姬"}
+    )
+    assert len(continuous.steps) == 1
+    assert continuous.steps[0].max_steps == 20
+    assert continuous.steps[0].max_resumes == 0
+    assert continuous.steps[0].effect == "navigation"
+    assert continuous.steps[0].success_criteria == compiled.steps[-1].success_criteria
+    assert continuous.success_criteria == compiled.success_criteria
+    assert manager.get_skill(builtin.id, 1).version == 1
+    assert manager.get_skill(builtin.id, 3) is None
+    assert [s.version for s in manager.list_skills() if s.id == builtin.id] == [2]
     for parameters in [{}, {"city": "广州"}, {"city": "广州", "shop_name": ""}]:
         with pytest.raises(SkillError):
             manager.compile_skill(builtin.id, 1, parameters)
@@ -286,5 +298,5 @@ def test_planner_catalog_exposes_application_without_changing_identity(
     )
     builtin = next(item for item in result if item["id"] == "dianping_search_shops")
     assert builtin["app"] == {"id": "dianping", "name": "大众点评"}
-    assert builtin["version"] == 1
+    assert builtin["version"] == 2
     assert set(builtin["parameters"]) == {"city", "shop_name"}
