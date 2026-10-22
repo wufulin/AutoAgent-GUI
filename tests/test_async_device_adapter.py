@@ -87,7 +87,7 @@ def test_pending_and_cancelled_writes_allow_only_raw_recovery_screenshots():
         adapter = AsyncDeviceAdapter(device)
         previous = await adapter.get_observation("before")
         task = asyncio.create_task(adapter.tap(1, 1))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), timeout=5.0)
         with pytest.raises(StaleObservationError, match="not ready"):
             await adapter.get_observation("during")
         assert (await adapter.get_screenshot()).width == 240
@@ -129,7 +129,7 @@ def test_late_physical_completion_invalidates_recovery_time_observation_cache():
 
         adapter = AsyncDeviceAdapter(Device())
         operation = asyncio.create_task(adapter.tap(1, 1))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), timeout=5.0)
         operation.cancel()
         with pytest.raises(asyncio.CancelledError):
             await operation
@@ -178,7 +178,7 @@ def test_session_reset_rejects_inflight_evidence_without_clearing_uncertainty():
         adapter = AsyncDeviceAdapter(Device())
         old_broker = adapter.observations
         pending = asyncio.create_task(adapter.get_observation("old-session"))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), timeout=5.0)
         adapter._outcome_unknown = True
         adapter.reset_observations()
         assert adapter.outcome_unknown
@@ -204,7 +204,7 @@ def test_capture_started_before_dispatch_cannot_be_used_after_write():
 
         adapter = AsyncDeviceAdapter(Device())
         pending = asyncio.create_task(adapter.get_observation("before-dispatch"))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), timeout=5.0)
         await adapter.tap(10, 20)
         finish.set()
         with pytest.raises(StaleObservationError):
@@ -260,7 +260,7 @@ def test_observation_consumers_share_capture_without_cancel_propagation():
         adapter = AsyncDeviceAdapter(device)
         first = asyncio.create_task(adapter.get_observation("decision"))
         second = asyncio.create_task(adapter.get_observation("replay"))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), timeout=5.0)
         first.cancel()
         with pytest.raises(asyncio.CancelledError):
             await first
@@ -327,7 +327,7 @@ def test_hierarchy_read_rejects_results_crossing_a_state_boundary(boundary):
 
         adapter = AsyncDeviceAdapter(Device())
         pending = asyncio.create_task(adapter.get_ui_hierarchy())
-        await started.wait()
+        await asyncio.wait_for(started.wait(), timeout=5.0)
         if boundary == "write":
             await adapter.tap(1, 1)
         else:

@@ -533,7 +533,7 @@ def test_settle_interruption_never_requests_completion(interruption):
 
         agent._cancel_event.wait = controlled_wait
         pending = asyncio.create_task(_single_step(agent))
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
         if interruption == "cancel":
             await agent.cancel()
         elif interruption == "unknown":
