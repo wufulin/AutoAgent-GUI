@@ -488,3 +488,50 @@ def test_identical_condition_text_is_preserved_for_each_goal_scope(monkeypatch):
         "overall condition",
         "overall condition",
     ]
+
+
+@pytest.mark.parametrize(
+    "version,builtin,skill_id,expected_profile",
+    [
+        (3, True, "dianping_search_shops", ("广州", "霸王茶姬")),
+        (2, True, "dianping_search_shops", None),
+        (3, False, "custom_dianping", None),
+        (3, False, "dianping_search_shops", None),
+        (3, True, "other_builtin", None),
+    ],
+)
+def test_conditioned_profile_is_only_passed_for_exact_builtin_revision(
+    monkeypatch, tmp_path, version, builtin, skill_id, expected_profile
+):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from AutoGLM_GUI.agents.gemini import async_agent
+
+    context, agent, _, timeline = setup(
+        monkeypatch, [[event("step"), event("done", success=True)]]
+    )
+    monkeypatch.setattr(async_agent, "AsyncGeminiAgent", ScriptedAgent)
+    agent.bind_dianping = Mock()
+    original_execute = context.execute
+    context.execute = AsyncMock(wraps=original_execute)
+    compiled = SkillManager(tmp_path / "skills.json").compile_skill(
+        "dianping_search_shops", version, {"city": "广州", "shop_name": "霸王茶姬"}
+    )
+    compiled = replace(compiled, builtin=builtin, id=skill_id)
+
+    async def scenario():
+        result = await execute_skill(context, "phone", compiled)
+        assert result.success
+        options = context.execute.await_args.kwargs
+        if expected_profile is None:
+            assert "dianping_parameters" not in options
+            agent.bind_dianping.assert_not_called()
+        else:
+            assert options["dianping_parameters"] == expected_profile
+            agent.bind_dianping.assert_called_once_with(*expected_profile)
+        assert agent.independent_verification is True
+        assert [entry[0] for entry in timeline] == ["execute", "verify"]
+        await context.close()
+
+    asyncio.run(scenario())

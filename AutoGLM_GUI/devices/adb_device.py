@@ -2,6 +2,7 @@
 
 from AutoGLM_GUI import adb
 from AutoGLM_GUI.adb import ADBConnection
+from AutoGLM_GUI.adb.hierarchy import get_ui_hierarchy, get_ui_hierarchy_async
 from AutoGLM_GUI.device_protocol import (
     AsyncDeviceManagerProtocol,
     AsyncDeviceProtocol,
@@ -62,6 +63,9 @@ class ADBDevice(DeviceProtocol):
             )
 
     # === Input Operations ===
+    def get_ui_hierarchy(self, timeout: int = 10) -> str:
+        return get_ui_hierarchy(self._device_id, timeout)
+
     def tap(self, x: int, y: int, delay: float | None = None) -> None:
         """Tap at specified coordinates."""
         with trace_span(
@@ -302,6 +306,9 @@ class AsyncADBDevice(AsyncDeviceProtocol):
     @property
     def device_id(self) -> str:
         return self._device_id
+
+    async def get_ui_hierarchy(self, timeout: int = 10) -> str:
+        return await get_ui_hierarchy_async(self._device_id, timeout)
 
     async def get_screenshot(self, timeout: int = 10) -> Screenshot:
         with trace_span(
