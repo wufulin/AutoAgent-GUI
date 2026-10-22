@@ -199,6 +199,7 @@ class SkillDefinition(BaseModel):
             max_steps=self.max_steps,
             max_seconds=self.max_seconds,
             platforms=tuple(self.platforms),
+            builtin=self.builtin,
         )
 
 
@@ -227,6 +228,7 @@ class CompiledSkill:
     max_steps: int
     max_seconds: int
     platforms: tuple[str, ...] = ("android",)
+    builtin: bool = False
 
 
 def _builtins() -> list[SkillDefinition]:
@@ -397,7 +399,7 @@ class SkillManager:
                 SkillDefinition.model_validate_json(
                     (builtin_root / name).read_text(encoding="utf-8")
                 )
-                for name in ("dianping.json", "dianping_v2.json")
+                for name in ("dianping.json", "dianping_v2.json", "dianping_v3.json")
             ),
         ]
         # Keep pinned built-in revisions executable while discovery offers only

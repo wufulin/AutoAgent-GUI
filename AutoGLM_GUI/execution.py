@@ -212,6 +212,16 @@ async def execute_skill(
                             },
                         },
                     )
+                    execution_options: dict[str, Any] = {}
+                    if (
+                        skill.builtin
+                        and skill.id == "dianping_search_shops"
+                        and skill.version == 3
+                    ):
+                        execution_options["dianping_parameters"] = (
+                            str(skill.parameters["city"]),
+                            str(skill.parameters["shop_name"]),
+                        )
                     result = await context.execute(
                         device_id,
                         goal,
@@ -219,6 +229,7 @@ async def execute_skill(
                         bound_constraints,
                         step.max_steps,
                         checkpoint,
+                        **execution_options,
                     )
                     if platform == "ios" and step.id == "enter" and result.success:
                         result.message = (

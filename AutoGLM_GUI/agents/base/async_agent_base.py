@@ -23,6 +23,7 @@ from AutoGLM_GUI.device_protocol import AsyncDeviceProtocol, DeviceProtocol, Scr
 from AutoGLM_GUI.devices.async_adapter import AsyncDeviceAdapter
 from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.model import MessageBuilder
+from AutoGLM_GUI.observation import Observation
 from AutoGLM_GUI.trace import summarize_text, trace_span
 
 
@@ -82,6 +83,8 @@ class AsyncAgentBase(ABC):
         self._step_count = 0
         self._is_running = False
         self._initial_screenshot: Screenshot | None = None
+        self._initial_observation: Observation | None = None
+        self._last_observation: Observation | None = None
         self._watchdog_started_at = 0.0
         self._repeated_action_count = 0
         self._no_progress_count = 0
@@ -122,6 +125,16 @@ class AsyncAgentBase(ABC):
 
     # ==================== 共享逻辑 ====================
 
+    async def _capture_observation(self, purpose: str) -> Screenshot:
+        observation = await self.device.get_observation(purpose)
+        self._last_observation = observation
+        return observation.screenshot
+
+    async def _prepare_device_state(self) -> tuple[Screenshot, str]:
+        screenshot = await self._capture_observation("initial")
+        self._initial_observation = self._last_observation
+        return screenshot, await self.device.get_current_app()
+
     async def stream(
         self,
         task: str,
@@ -146,6 +159,9 @@ class AsyncAgentBase(ABC):
         if self._is_running:
             raise RuntimeError("Agent already has an active stream")
         self._is_running = True
+        self.device.reset_observations()
+        self._last_observation = None
+        self._initial_observation = None
         if continue_with is None:
             self._step_count = 0
             self._watchdog_started_at = time.monotonic()
@@ -184,8 +200,7 @@ class AsyncAgentBase(ABC):
                                 "device_id": self.device.device_id,
                             },
                         ):
-                            screenshot = await self.device.get_screenshot()
-                            current_app = await self.device.get_current_app()
+                            screenshot, current_app = await self._prepare_device_state()
                     except Exception as e:
                         logger.error(f"Failed to get device info: {e}")
                         stream_span.set_attributes(
@@ -443,6 +458,7 @@ class AsyncAgentBase(ABC):
     async def cancel(self) -> None:
         """取消当前执行。"""
         self._cancel_event.set()
+        self.device.observations.invalidate()
         logger.info(f"{self.__class__.__name__} cancelled by user")
 
     def reset(self) -> None:
@@ -452,6 +468,9 @@ class AsyncAgentBase(ABC):
         )
         self._context = [copy.deepcopy(self._initial_system_message)]
         self._initial_screenshot = None
+        self._initial_observation = None
+        self._last_observation = None
+        self.device.reset_observations()
         self._user_image_attachments = []
         self._step_count = 0
         self._watchdog_started_at = 0.0

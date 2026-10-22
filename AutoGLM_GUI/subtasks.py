@@ -21,6 +21,7 @@ from AutoGLM_GUI.agents.protocols import AsyncAgent
 from AutoGLM_GUI.config import ModelConfig
 from AutoGLM_GUI.config_manager import config_manager
 from AutoGLM_GUI.exceptions import DeviceBusyError
+from AutoGLM_GUI.devices.async_adapter import AsyncDeviceAdapter
 from AutoGLM_GUI.execution_metrics import record_model_call, record_usage
 from AutoGLM_GUI.model.message_builder import MessageBuilder
 from AutoGLM_GUI.phone_agent_trace import (
@@ -75,6 +76,8 @@ class VerificationDiagnostics(BaseModel):
 class Verification(VerificationReply):
     observed_at: str
     screenshot_sha256: str
+    observation_id: str | None = None
+    observation_session_id: str | None = None
     error: str | None = None
     diagnostics: VerificationDiagnostics | None = None
 
@@ -384,6 +387,7 @@ async def verify_completion(
     """Observe after execution and verify a complete answer without action tools."""
     observed_at = datetime.now(timezone.utc).isoformat()
     digest = ""
+    observation = None
     diagnostics = VerificationDiagnostics()
     error_code = None
     try:
@@ -397,7 +401,13 @@ async def verify_completion(
             try:
                 async with asyncio.timeout(VERIFICATION_TIMEOUT_SECONDS):
                     try:
-                        screenshot = await device.get_screenshot()
+                        if isinstance(device, AsyncDeviceAdapter):
+                            observation = await device.get_observation(
+                                "verification", fresh=True
+                            )
+                            screenshot = observation.screenshot
+                        else:
+                            screenshot = await device.get_screenshot()
                         observed_at = datetime.now(timezone.utc).isoformat()
                         if not screenshot.base64_data or getattr(
                             screenshot, "is_sensitive", False
@@ -546,6 +556,12 @@ async def verify_completion(
                         **reply.model_dump(),
                         observed_at=observed_at,
                         screenshot_sha256=digest,
+                        observation_id=(
+                            observation.observation_id if observation else None
+                        ),
+                        observation_session_id=(
+                            observation.session_id if observation else None
+                        ),
                         diagnostics=diagnostics,
                     )
             except asyncio.CancelledError:
@@ -587,6 +603,7 @@ class SubtaskState:
     constraints: list[str]
     agent: AsyncAgent
     feedback: str | None = None
+    dianping_parameters: tuple[str, str] | None = None
 
 
 @dataclass
@@ -848,6 +865,8 @@ class SubtaskRunContext:
         constraints: list[str],
         max_steps: int = 10,
         checkpoint: str | None = None,
+        *,
+        dianping_parameters: tuple[str, str] | None = None,
     ) -> SubtaskResult:
         constraints = [*self.task_constraints, *constraints]
         failure = SubtaskResult(
@@ -895,6 +914,7 @@ class SubtaskRunContext:
                     constraints,
                     max_steps,
                     checkpoint,
+                    dianping_parameters=dianping_parameters,
                 )
             except asyncio.CancelledError:
                 self.cancelled = True
@@ -920,6 +940,8 @@ class SubtaskRunContext:
         constraints: list[str],
         max_steps: int,
         checkpoint: str | None,
+        *,
+        dianping_parameters: tuple[str, str] | None = None,
     ) -> SubtaskResult:
         from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
 
@@ -937,6 +959,7 @@ class SubtaskRunContext:
             or state.result.goal != goal
             or state.result.success_criteria != criteria
             or state.constraints != constraints
+            or state.dianping_parameters != dianping_parameters
         ):
             return self._record(
                 SubtaskResult(
@@ -988,6 +1011,14 @@ class SubtaskRunContext:
 
             if isinstance(agent, AsyncGeminiAgent):
                 agent.independent_verification = True
+                if dianping_parameters is not None:
+                    agent.bind_dianping(*dianping_parameters)
+            elif dianping_parameters is not None:
+                return self.stop(
+                    goal,
+                    "conditioned_skill_unsupported",
+                    "条件化技能需要 Gemini 执行器与本地 ADB 节点能力；可选择 v2。",
+                )
             # The run context owns the total task budget across all subgoals.
             agent.agent_config.max_steps = None
             state = SubtaskState(
@@ -1002,6 +1033,7 @@ class SubtaskRunContext:
                 device_id,
                 constraints,
                 agent,
+                dianping_parameters=dianping_parameters,
             )
         else:
             agent = state.agent

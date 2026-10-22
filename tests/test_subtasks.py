@@ -1019,3 +1019,202 @@ def test_cancel_cleanup_reports_unconfirmed_device_effect(
         manager.dispose_device_lease.assert_awaited_once()
 
     asyncio.run(scenario())
+
+
+def test_final_verifier_requests_fresh_observation_instead_of_execution_frame(
+    monkeypatch, verifier_clients
+):
+    import hashlib
+
+    from AutoGLM_GUI.devices.async_adapter import AsyncDeviceAdapter
+
+    context, agent, _ = setup_context(monkeypatch, [[event("done", success=True)]])
+    old_pixels, new_pixels = b"executor-final-frame", b"independent-new-frame"
+
+    class Device:
+        device_id = "phone"
+        calls = 0
+
+        async def get_screenshot(self, timeout=10):
+            self.calls += 1
+            pixels = old_pixels if self.calls == 1 else new_pixels
+            return Screenshot(base64.b64encode(pixels).decode(), 10, 10)
+
+    raw = Device()
+    agent.device = AsyncDeviceAdapter(raw)
+    agent.device.get_observation = AsyncMock(wraps=agent.device.get_observation)
+
+    async def scenario():
+        execution_frame = await agent.device.get_observation("executor-final")
+        assert agent.device.observations.recent(1) is execution_frame
+        result = await context.execute("phone", "goal", ["title"], [])
+        assert result.success
+        assert result.verification is not None
+        assert raw.calls == 2
+        agent.device.get_observation.assert_awaited_with("verification", fresh=True)
+        assert result.verification.observation_id != execution_frame.observation_id
+        assert result.verification.observation_session_id == execution_frame.session_id
+        assert (
+            result.verification.screenshot_sha256
+            == hashlib.sha256(new_pixels).hexdigest()
+        )
+        messages = verifier_clients.create.await_args.kwargs["messages"]
+        provider_payload = json.dumps(messages)
+        assert base64.b64encode(new_pixels).decode() in provider_payload
+        assert base64.b64encode(old_pixels).decode() not in provider_payload
+        assert len(agent.context) == 1
+        await context.close()
+
+    asyncio.run(scenario())
+
+
+def test_final_verifier_does_not_join_execution_capture_already_in_flight(
+    monkeypatch, verifier_clients
+):
+    from AutoGLM_GUI.devices.async_adapter import AsyncDeviceAdapter
+
+    context, agent, _ = setup_context(monkeypatch, [[event("done", success=True)]])
+
+    class Device:
+        device_id = "phone"
+
+        def __init__(self):
+            self.requests = []
+            self.started = asyncio.Event()
+
+        async def get_screenshot(self, timeout=10):
+            request = asyncio.get_running_loop().create_future()
+            self.requests.append(request)
+            self.started.set()
+            return await request
+
+        async def wait_for_calls(self, count):
+            async def wait():
+                while len(self.requests) < count:
+                    await self.started.wait()
+                    self.started.clear()
+
+            await asyncio.wait_for(wait(), timeout=1)
+
+    raw = Device()
+    agent.device = AsyncDeviceAdapter(raw)
+
+    async def scenario():
+        preceding = asyncio.create_task(agent.device.get_observation("executor-final"))
+        await raw.wait_for_calls(1)
+        completing = asyncio.create_task(
+            context.execute("phone", "goal", ["title"], [])
+        )
+        await raw.wait_for_calls(2)
+        assert not preceding.done()
+        raw.requests[1].set_result(
+            Screenshot(base64.b64encode(b"fresh-verification").decode(), 10, 10)
+        )
+        result = await completing
+        assert result.success
+        assert result.verification is not None
+        raw.requests[0].set_result(
+            Screenshot(base64.b64encode(b"old-execution").decode(), 10, 10)
+        )
+        old = await preceding
+        assert result.verification.observation_id != old.observation_id
+        assert len(raw.requests) == 2
+        await context.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "initial_profile,resume_profile",
+    [
+        (("广州", "霸王茶姬"), ("深圳", "霸王茶姬")),
+        (("广州", "霸王茶姬"), ("广州", "古茗")),
+        (("广州", "霸王茶姬"), None),
+        (None, ("广州", "霸王茶姬")),
+    ],
+)
+def test_checkpoint_rejects_changed_conditioned_profile_before_any_more_actions(
+    monkeypatch, initial_profile, resume_profile
+):
+    from unittest.mock import Mock
+
+    from AutoGLM_GUI.agents.gemini import async_agent
+
+    context, agent, manager = setup_context(
+        monkeypatch,
+        [
+            [
+                event("step"),
+                event("done", success=False, stop_reason="step_budget_reached"),
+            ]
+        ],
+    )
+    monkeypatch.setattr(async_agent, "AsyncGeminiAgent", FakeAgent)
+    agent.bind_dianping = Mock()
+
+    async def scenario():
+        first = await context.execute(
+            "phone", "goal", ["title"], [], dianping_parameters=initial_profile
+        )
+        assert first.status == "partial" and first.checkpoint
+        resumed = await context.execute(
+            "phone",
+            "goal",
+            ["title"],
+            [],
+            checkpoint=first.checkpoint,
+            dianping_parameters=resume_profile,
+        )
+        assert resumed.status == "blocked"
+        assert resumed.stop_reason == "invalid_checkpoint"
+        assert len(agent.feedback) == 1
+        assert agent.resets == 1
+        assert agent.bind_dianping.call_count == int(initial_profile is not None)
+        assert manager.get_agent_with_context_async.await_count == 1
+        await context.close()
+
+    asyncio.run(scenario())
+
+
+def test_checkpoint_with_same_conditioned_profile_keeps_controller_binding(monkeypatch):
+    from unittest.mock import Mock
+
+    from AutoGLM_GUI.agents.gemini import async_agent
+
+    context, agent, _ = setup_context(
+        monkeypatch,
+        [
+            [
+                event("step"),
+                event("done", success=False, stop_reason="step_budget_reached"),
+            ],
+            [event("step"), event("done", success=True)],
+        ],
+    )
+    monkeypatch.setattr(async_agent, "AsyncGeminiAgent", FakeAgent)
+    monkeypatch.setattr(
+        subtasks, "verify_completion", AsyncMock(return_value=verification())
+    )
+    agent.bind_dianping = Mock()
+    profile = ("广州", "霸王茶姬")
+
+    async def scenario():
+        first = await context.execute(
+            "phone", "goal", ["title"], [], dianping_parameters=profile
+        )
+        assert first.checkpoint
+        resumed = await context.execute(
+            "phone",
+            "goal",
+            ["title"],
+            [],
+            checkpoint=first.checkpoint,
+            dianping_parameters=profile,
+        )
+        assert resumed.success
+        assert len(agent.feedback) == 2 and agent.feedback[1]
+        assert agent.resets == 1
+        agent.bind_dianping.assert_called_once_with(*profile)
+        await context.close()
+
+    asyncio.run(scenario())

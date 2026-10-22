@@ -15,9 +15,11 @@ from typing import Any, cast
 from AutoGLM_GUI.actions import ActionResult
 from AutoGLM_GUI.agents.base import AsyncAgentBase
 from AutoGLM_GUI.device_protocol import Screenshot
+from AutoGLM_GUI.dianping_controller import DianpingController
 from AutoGLM_GUI.execution_metrics import record_model_call, record_usage
 from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.model import MessageBuilder
+from AutoGLM_GUI.observation import Observation
 from AutoGLM_GUI.model.error_details import (
     model_error_message,
     serialize_model_error_async,
@@ -49,8 +51,25 @@ class AsyncGeminiAgent(AsyncAgentBase):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._consecutive_invalid_tool_calls = 0
+        self.dianping_controller: DianpingController | None = None
+        self._dianping_xml: str | None = None
+        self._dianping_xml_started_at = 0.0
+        self._dianping_xml_epoch: tuple[str, int] | None = None
         self._independent_verification = False
-        self._cached_observation: tuple[Screenshot, float, int] | None = None
+        self._cached_observation: tuple[Observation, int] | None = None
+
+    def bind_dianping(self, city: str, shop_name: str) -> None:
+        if not self.device.supports_ui_hierarchy:
+            raise ValueError("Conditioned Dianping requires local ADB UI hierarchy")
+        self.dianping_controller = DianpingController(city, shop_name)
+
+    async def _prepare_device_state(self) -> tuple[Screenshot, str]:
+        if self.dianping_controller is not None:
+            self._dianping_xml_started_at = time.monotonic()
+            broker = self.device.observations
+            self._dianping_xml_epoch = (broker.session_id, broker.generation)
+            self._dianping_xml = await self.device.get_ui_hierarchy()
+        return await super()._prepare_device_state()
 
     @property
     def independent_verification(self) -> bool:
@@ -78,6 +97,9 @@ class AsyncGeminiAgent(AsyncAgentBase):
         return prompt
 
     def reset(self) -> None:
+        self.dianping_controller = None
+        self._dianping_xml = None
+        self._dianping_xml_epoch = None
         self._independent_verification = False
         self._cached_observation = None
         super().reset()
@@ -112,16 +134,19 @@ class AsyncGeminiAgent(AsyncAgentBase):
                     yield event
         finally:
             self._cached_observation = None
+            self.device.observations.invalidate()
 
-    def _take_cached_observation(self) -> tuple[Screenshot, float, int] | None:
+    def _take_cached_observation(self) -> tuple[Observation, float, int] | None:
         cached, self._cached_observation = self._cached_observation, None
         if cached is None or not self.independent_verification:
             return None
-        screenshot, captured_at, source_step = cached
-        age = time.monotonic() - captured_at
+        observation, source_step = cached
+        screenshot = observation.screenshot
+        age = observation.age_seconds()
         if (
             not 0 <= age <= self.observation_reuse_ttl_seconds
             or source_step != self._step_count - 1
+            or not self.device.observations.is_current(observation)
             or screenshot.is_sensitive
             or screenshot.width <= 0
             or screenshot.height <= 0
@@ -131,7 +156,7 @@ class AsyncGeminiAgent(AsyncAgentBase):
             or self.device.pending_writes
         ):
             return None
-        return screenshot, age, source_step
+        return observation, age, source_step
 
     def _get_default_system_prompt(self, lang: str) -> str:
         return get_system_prompt(lang)
@@ -166,8 +191,17 @@ class AsyncGeminiAgent(AsyncAgentBase):
         if self._cancel_event.is_set():
             self._cached_observation = None
             raise asyncio.CancelledError()
+        if self.dianping_controller is not None:
+            from .conditioned import execute_conditioned_step
+
+            async for event in execute_conditioned_step(self):
+                yield event
+            return
         self._step_count += 1
         screenshot = self._initial_screenshot if self._step_count == 1 else None
+        decision_observation = (
+            self._initial_observation if self._step_count == 1 else None
+        )
         observation_source = "initial" if self._step_count == 1 else "capture"
         observation_source_step = self._step_count
 
@@ -176,7 +210,9 @@ class AsyncGeminiAgent(AsyncAgentBase):
             try:
                 cached = self._take_cached_observation()
                 if cached is not None:
-                    screenshot, age, observation_source_step = cached
+                    decision_observation, age, observation_source_step = cached
+                    screenshot = decision_observation.screenshot
+                    self._last_observation = decision_observation
                     observation_source = "post_action_reuse"
                     with trace_span(
                         "step.reuse_observation",
@@ -197,7 +233,8 @@ class AsyncGeminiAgent(AsyncAgentBase):
                             "purpose": "observation",
                         },
                     ):
-                        screenshot = await self.device.get_screenshot()
+                        screenshot = await self._capture_observation("decision")
+                    decision_observation = self._last_observation
                 with trace_span(
                     "step.get_current_app",
                     attrs={
@@ -235,6 +272,8 @@ class AsyncGeminiAgent(AsyncAgentBase):
                 )
 
         observation = screenshot
+        broker = self.device.observations
+        decision_epoch = (broker.session_id, broker.generation, broker.action_sequence)
         await record_phone_agent_event(
             "observation",
             self._step_count,
@@ -417,6 +456,7 @@ class AsyncGeminiAgent(AsyncAgentBase):
             "action_selected", self._step_count, action=action
         )
         self._cached_observation = None
+        pre_action_observation = None
         try:
             if action.get("_metadata") != "finish":
                 with trace_span(
@@ -427,7 +467,8 @@ class AsyncGeminiAgent(AsyncAgentBase):
                         "purpose": "pre_action",
                     },
                 ):
-                    screenshot = await self.device.get_screenshot()
+                    screenshot = await self._capture_observation("pre_action")
+                    pre_action_observation = self._last_observation
                 await record_phone_agent_event(
                     "pre_action", self._step_count, screenshot=screenshot
                 )
@@ -466,6 +507,19 @@ class AsyncGeminiAgent(AsyncAgentBase):
                 raise ValueError(
                     "Device action outcome is unknown; action was not executed"
                 )
+            broker = self.device.observations
+            if decision_epoch != (
+                broker.session_id,
+                broker.generation,
+                broker.action_sequence,
+            ) or any(
+                captured is not None and not broker.is_current(captured)
+                for captured in (decision_observation, pre_action_observation)
+            ):
+                raise ValueError(
+                    "SCREEN_CHANGED: observation generation or session changed; "
+                    "action was not executed"
+                )
             with trace_span(
                 "step.execute_action",
                 attrs={
@@ -497,10 +551,12 @@ class AsyncGeminiAgent(AsyncAgentBase):
                     "step.capture_screenshot",
                     attrs={"step": self._step_count, "purpose": "post_action"},
                 ):
-                    after = await self.device.get_screenshot()
-                captured_at = time.monotonic()
+                    after = await self._capture_observation("post_action")
+                post_action_observation = self._last_observation
                 if (
                     self.independent_verification
+                    and post_action_observation is not None
+                    and self.device.observations.is_current(post_action_observation)
                     and result.success
                     and not result.should_finish
                     and not result.requires_confirmation
@@ -515,7 +571,10 @@ class AsyncGeminiAgent(AsyncAgentBase):
                     and (after.width, after.height)
                     == (screenshot.width, screenshot.height)
                 ):
-                    self._cached_observation = (after, captured_at, self._step_count)
+                    self._cached_observation = (
+                        post_action_observation,
+                        self._step_count,
+                    )
                 await record_phone_agent_event(
                     "post_action", self._step_count, screenshot=after
                 )

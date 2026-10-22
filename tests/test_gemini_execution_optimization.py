@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import time
 from io import BytesIO
 from typing import Any
 from unittest.mock import AsyncMock
@@ -23,6 +24,7 @@ from AutoGLM_GUI.agents.gemini.tools import (
 )
 from AutoGLM_GUI.config import AgentConfig, ModelConfig
 from AutoGLM_GUI.device_protocol import Screenshot
+from AutoGLM_GUI.observation import Observation
 
 
 def _shot(image: Image.Image | None = None, *, sensitive: bool = False) -> Screenshot:
@@ -85,6 +87,25 @@ class _Agent(AsyncGeminiAgent):
             self.calls.pop(0) if self.calls else ("finish", {"message": "done"})
         )
         return "", None, name, arguments
+
+
+def _cache_observation(agent: _Agent, *, age_seconds: float = 0.0) -> Observation:
+    frame = _shot()
+    broker = agent.device.observations
+    captured_at = time.monotonic() - age_seconds
+    return Observation(
+        observation_id="test-cached-frame",
+        session_id=broker.session_id,
+        geometry_id=broker.geometry_id,
+        generation=broker.generation,
+        action_sequence=broker.action_sequence,
+        capture_started_at=captured_at,
+        captured_at=captured_at,
+        purpose="test-post-action",
+        _base64_data=frame.base64_data,
+        _width=frame.width,
+        _height=frame.height,
+    )
 
 
 async def _single_step(agent: _Agent):
@@ -259,15 +280,12 @@ def test_post_action_reused_once_but_pre_action_stays_fresh(monkeypatch, tmp_pat
     assert reuse[0]["attrs"]["source_step"] == 1
 
 
-def test_cache_expires_and_is_single_use(monkeypatch):
-    monkeypatch.setattr(
-        "AutoGLM_GUI.agents.gemini.async_agent.time.monotonic", lambda: 10.0
-    )
+def test_cache_expires_and_is_single_use():
     agent = _Agent([])
     agent._step_count = 2
-    agent._cached_observation = (_shot(), 8.9, 1)
+    agent._cached_observation = (_cache_observation(agent, age_seconds=1.1), 1)
     assert agent._take_cached_observation() is None
-    agent._cached_observation = (_shot(), 9.9, 1)
+    agent._cached_observation = (_cache_observation(agent, age_seconds=0.1), 1)
     assert agent._take_cached_observation() is not None
     assert agent._take_cached_observation() is None
 
@@ -311,33 +329,35 @@ def test_continuous_search_reuses_observations_without_skipping_action_guards(
 
 
 @pytest.mark.parametrize("frame", [_shot(sensitive=True), Screenshot("", 0, 400)])
-def test_sensitive_and_invalid_frames_are_not_reused(frame):
-    import time
-
-    agent = _Agent([])
-    agent._step_count = 2
-    agent._cached_observation = (frame, time.monotonic(), 1)
-    assert agent._take_cached_observation() is None
+def test_sensitive_and_invalid_frames_are_not_reused(monkeypatch, frame):
+    monkeypatch.setattr(
+        "AutoGLM_GUI.agents.gemini.async_agent.phone_agent_replay_active", lambda: True
+    )
+    agent = _Agent([("back", {})], [_shot(), frame])
+    result = asyncio.run(_single_step(agent))
+    assert result["success"] is True  # Capture failure must not replay the action.
+    assert agent.fake_device.captures == 2
+    assert agent._cached_observation is None
 
 
 def test_reset_cancel_and_continuation_discard_cached_frame():
     import time
 
     agent = _Agent([])
-    agent._cached_observation = (_shot(), time.monotonic(), 1)
+    agent._cached_observation = (_cache_observation(agent), 1)
     agent.reset()
     assert agent._cached_observation is None
     assert agent.independent_verification is False
     assert "Independent verification handoff" not in agent.get_system_prompt()
     agent.independent_verification = True
-    agent._cached_observation = (_shot(), time.monotonic(), 1)
+    agent._cached_observation = (_cache_observation(agent), 1)
     asyncio.run(agent.cancel())
     assert agent._cached_observation is None
 
     async def resume():
         agent._step_count = 1
         agent._watchdog_started_at = time.monotonic()
-        agent._cached_observation = (_shot(), time.monotonic(), 1)
+        agent._cached_observation = (_cache_observation(agent), 1)
         return [
             event async for event in agent.stream("resume", continue_with="continue")
         ]
@@ -530,5 +550,111 @@ def test_settle_interruption_never_requests_completion(interruption):
             assert step["success"] is False
             assert step.get("stop_reason") != "verification_requested"
         assert agent._cached_observation is None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "boundary", ["invalidate", "session_reset", "completed_action"]
+)
+def test_cached_frame_never_crosses_an_observation_epoch(monkeypatch, boundary):
+    from AutoGLM_GUI.agents.gemini import async_agent as module
+
+    monkeypatch.setattr(module, "phone_agent_replay_active", lambda: True)
+    recorded = []
+
+    async def record(phase, step, **data):
+        recorded.append((phase, step, data))
+
+    monkeypatch.setattr(module, "record_phone_agent_event", record)
+
+    async def run():
+        agent = _Agent([("back", {}), ("back", {})])
+        stream = agent.stream("two actions")
+        await anext(stream)
+        old = agent._last_observation
+        assert old is not None and agent._cached_observation is not None
+        if boundary == "invalidate":
+            agent.device.observations.invalidate()
+        elif boundary == "session_reset":
+            agent.device.reset_observations()
+        else:
+            agent.device.observations.action_started()
+            agent.device.observations.action_completed()
+        assert not agent.device.observations.is_current(old)
+        second = await anext(stream)
+        assert second["data"]["success"] is True
+        assert agent.action_handler.execute.await_count == 2
+        assert agent.fake_device.captures == 6
+        sources = [
+            data["observation_source"]
+            for phase, step, data in recorded
+            if phase == "observation" and step == 2
+        ]
+        assert sources == ["capture"]
+        await stream.aclose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "boundary", ["invalidate", "session_reset", "completed_action"]
+)
+@pytest.mark.parametrize("independent", [True, False])
+def test_inference_result_cannot_cross_a_device_epoch(
+    monkeypatch, boundary, independent
+):
+    async def run():
+        agent = _Agent([("back", {})], independent=independent)
+
+        async def inference():
+            if boundary == "invalidate":
+                agent.device.observations.invalidate()
+            elif boundary == "session_reset":
+                agent.device.reset_observations()
+            else:
+                agent.device.observations.action_started()
+                agent.device.observations.action_completed()
+            return "", None, "back", {}
+
+        monkeypatch.setattr(agent, "_call_llm_with_tools", inference)
+        events = [event async for event in agent.stream("one action")]
+        assert events[-1]["data"]["success"] is False
+        assert "generation or session changed" in events[-1]["data"]["message"]
+        agent.action_handler.execute.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_generation_change_during_pre_action_recording_stops_dispatch(monkeypatch):
+    from AutoGLM_GUI.agents.gemini import async_agent as module
+
+    async def run():
+        agent = _Agent([("back", {})])
+
+        async def record(phase, step, **data):
+            if phase == "pre_action":
+                agent.device.observations.invalidate()
+
+        monkeypatch.setattr(module, "record_phone_agent_event", record)
+        events = [event async for event in agent.stream("one action")]
+        assert events[-1]["data"]["success"] is False
+        agent.action_handler.execute.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_closing_finish_stream_invalidates_the_retained_observation():
+    async def run():
+        agent = _Agent([("finish", {"message": "done"})])
+        stream = agent.stream("inspect")
+        first = await anext(stream)
+        assert first["data"]["finished"]
+        previous = agent._last_observation
+        assert previous is not None
+        assert agent.device.observations.is_current(previous)
+        await stream.aclose()
+        assert not agent.device.observations.is_current(previous)
+        assert agent.device.observations.recent(100) is None
 
     asyncio.run(run())

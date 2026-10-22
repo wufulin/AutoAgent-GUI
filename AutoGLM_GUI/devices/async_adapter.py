@@ -13,6 +13,11 @@ from AutoGLM_GUI.device_protocol import (
     DeviceProtocol,
     Screenshot,
 )
+from AutoGLM_GUI.observation import (
+    Observation,
+    ObservationBroker,
+    StaleObservationError,
+)
 from AutoGLM_GUI.trace import trace_span
 
 
@@ -39,6 +44,7 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
         self._writes: set[threading.Event] = set()
         self._write_tasks: set[asyncio.Task[Any]] = set()
         self._outcome_unknown = False
+        self.observations = ObservationBroker(self)
 
     @property
     def pending_writes(self) -> bool:
@@ -68,6 +74,12 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
                 raise RuntimeError("Device write is still in flight")
             self._writes.clear()
             self._outcome_unknown = False
+        self.reset_observations()
+
+    def reset_observations(self) -> None:
+        """Start a new observation session without clearing write uncertainty."""
+        self.observations.invalidate()
+        self.observations = ObservationBroker(self)
 
     async def _write(self, fn: Callable[..., Any], *args: Any) -> Any:
         completed = threading.Event()
@@ -77,6 +89,8 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
             ):
                 raise RuntimeError("Device requires recovery before another write")
             self._writes = {completed}
+        self.observations.action_started()
+        abandoned = False
 
         def sync_call() -> Any:
             try:
@@ -102,13 +116,22 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
             if done.cancelled() or done.exception() is not None:
                 with self._write_lock:
                     self._outcome_unknown = True
+                self.observations.invalidate()
+            elif abandoned:
+                # This callback runs on the event loop, even when the physical
+                # operation finished in a worker after its awaiter was cancelled.
+                self.observations.invalidate()
 
         task.add_done_callback(finished)
         try:
-            return await asyncio.shield(task)
+            result = await asyncio.shield(task)
+            self.observations.action_completed()
+            return result
         except BaseException:
+            abandoned = True
             with self._write_lock:
                 self._outcome_unknown = True
+            self.observations.invalidate()
             raise
 
     @property
@@ -121,6 +144,59 @@ class AsyncDeviceAdapter(AsyncDeviceProtocol):
             attrs={"device_id": self.device_id},
         ):
             return await _maybe_await(self._device.get_screenshot, timeout)
+
+    async def get_observation(self, purpose: str, fresh: bool = False) -> Observation:
+        """Obtain evidence only while writes are idle and their outcome is known.
+
+        Raw ``get_screenshot`` remains available for read-only recovery. Such a
+        recovery image must not become action evidence until explicit recovery.
+        """
+        broker = self.observations
+        if self.pending_writes or self.outcome_unknown:
+            broker.invalidate()
+            raise StaleObservationError("device is not ready for action observation")
+        observation = await broker.capture(purpose, fresh=fresh)
+        if (
+            self.observations is not broker
+            or self.pending_writes
+            or self.outcome_unknown
+            or not broker.is_current(observation)
+        ):
+            broker.invalidate()
+            raise StaleObservationError("device changed during observation capture")
+        return observation
+
+    @property
+    def supports_ui_hierarchy(self) -> bool:
+        """Hierarchy access is optional and must be supplied by the device."""
+        return callable(getattr(self._device, "get_ui_hierarchy", None))
+
+    async def get_ui_hierarchy(self, timeout: int = 10) -> str:
+        """Read optional UI evidence without crossing a write/session boundary."""
+        method = getattr(self._device, "get_ui_hierarchy", None)
+        if not callable(method):
+            raise NotImplementedError("device does not support UI hierarchy")
+        broker = self.observations
+        generation = broker.generation
+        if self.pending_writes or self.outcome_unknown:
+            broker.invalidate()
+            raise StaleObservationError("device is not ready for UI hierarchy")
+        with trace_span(
+            "device_adapter.get_ui_hierarchy",
+            attrs={"device_id": self.device_id, "timeout": timeout},
+        ):
+            hierarchy = await _maybe_await(method, timeout)
+        if (
+            self.observations is not broker
+            or broker.generation != generation
+            or self.pending_writes
+            or self.outcome_unknown
+        ):
+            broker.invalidate()
+            raise StaleObservationError("device changed during UI hierarchy capture")
+        if not isinstance(hierarchy, str):
+            raise ValueError("device UI hierarchy must be a string")
+        return hierarchy
 
     async def tap(self, x: int, y: int, delay: float | None = None) -> None:
         with trace_span(

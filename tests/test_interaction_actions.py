@@ -71,6 +71,9 @@ class FakeDevice:
 
 class FakeScreenshot:
     base64_data = "fake-screen"
+    width = 1080
+    height = 1920
+    is_sensitive = False
 
 
 class StreamFakeDevice(FakeDevice):
