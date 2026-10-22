@@ -191,6 +191,41 @@ def verifier_clients(monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    "fields,status,reason",
+    [
+        ({"facts": ["extra field"]}, "completed", "goal_verified"),
+        ({"verdict": None}, "blocked", "verification_inconclusive"),
+        ({"verdict": "maybe"}, "blocked", "verification_inconclusive"),
+        ({"reason": "  "}, "blocked", "verification_inconclusive"),
+        ({"verdict": "unmet", "facts": []}, "partial", "verification_unmet"),
+    ],
+)
+def test_relaxed_verifier_format_preserves_task_acceptance(
+    monkeypatch, verifier_clients, fields, status, reason
+):
+    context, agent, _ = setup_context(monkeypatch, [[event("done", success=True)]])
+    criterion = {"criterion": "title", "verdict": "met", "reason": "visible title"}
+    criterion.update(fields)
+    verifier_clients.create.return_value.choices[0].message.content = json.dumps(
+        {"criteria": [criterion], "ignored": "extra field"}
+    )
+
+    async def scenario():
+        result = await context.execute("phone", "goal", ["title"], [])
+        assert result.status == status
+        assert result.stop_reason == reason
+        assert result.success is (status == "completed")
+        if status == "blocked":
+            assert result.checkpoint is None
+        agent.device.get_screenshot.assert_awaited_once()
+        verifier_clients.create.assert_awaited_once()
+        assert len(agent.context) == 1
+        await context.close()
+
+    asyncio.run(scenario())
+
+
 def test_task_reuses_verifier_connection_but_each_check_captures_fresh_frame(
     monkeypatch, verifier_clients
 ):

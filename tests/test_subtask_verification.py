@@ -358,18 +358,7 @@ def test_empty_response_has_distinct_error(harness, content, choices):
         (reply_content(["list", "title"]), "verification_criteria_mismatch"),
         (reply_content(["Title", "list"]), "verification_criteria_mismatch"),
         (reply_content(["title"]), "verification_criteria_mismatch"),
-        (
-            '{"criteria":[],"facts":"private-schema-value"}',
-            "verification_schema_invalid",
-        ),
-        (
-            reply_content(verdict="private-invalid-verdict"),
-            "verification_schema_invalid",
-        ),
-        (
-            reply_content(**{"private-extra-field": "private-extra-value"}),
-            "verification_schema_invalid",
-        ),
+        ('{"criteria":"private-schema-value"}', "verification_schema_invalid"),
         ("[]", "verification_schema_invalid"),
     ],
 )
@@ -394,6 +383,103 @@ def test_invalid_output_is_classified_without_raw_validation_details(
         "private-extra-field",
         "private-extra-value",
     )
+
+
+@pytest.mark.parametrize("wrapper", ["{}", "```json\n{}\n```", "```\n{}\n```"])
+def test_extra_fields_including_nested_facts_do_not_block_verification(
+    harness, wrapper
+):
+    payload = json.loads(reply_content())
+    payload["private-extra-field"] = "private-extra-value"
+    payload["verdict"] = "unmet"  # Only per-condition judgments are authoritative.
+    for item in payload["criteria"]:
+        item["facts"] = ["private-nested-fact"]
+        item["private-extra-field"] = "private-extra-value"
+    harness.create.return_value = response(wrapper.format(json.dumps(payload)))
+    result = asyncio.run(harness.run())
+    assert result.error is None
+    assert [item.verdict for item in result.criteria] == ["met", "met"]
+    assert result.facts == ["visible list"]
+    harness.device.get_screenshot.assert_awaited_once()
+    harness.create.assert_awaited_once()
+    harness.assert_private_data_absent(
+        result, "private-extra-field", "private-extra-value", "private-nested-fact"
+    )
+
+
+@pytest.mark.parametrize(
+    "facts,expected",
+    [
+        (None, []),
+        ("visible list", ["visible list"]),
+        (42, []),
+        ({"text": "ignored"}, []),
+        (["visible list", None, 3, True, "", "  "], ["visible list"]),
+        ([f"fact {i}" for i in range(21)], [f"fact {i}" for i in range(20)]),
+    ],
+)
+def test_optional_facts_are_normalized_without_changing_judgments(
+    harness, facts, expected
+):
+    payload = json.loads(reply_content())
+    payload["facts"] = facts
+    harness.create.return_value = response(json.dumps(payload))
+    result = asyncio.run(harness.run())
+    assert result.error is None
+    assert result.facts == expected
+    assert all(item.verdict == "met" for item in result.criteria)
+
+
+def test_single_condition_object_and_missing_facts_are_accepted(harness):
+    harness.create.return_value = response(
+        json.dumps(
+            {"criteria": {"criterion": "title", "verdict": " MET ", "reason": "seen"}}
+        )
+    )
+    result = asyncio.run(harness.run(criteria=["title"]))
+    assert result.error is None
+    assert result.criteria[0].verdict == "met"
+    assert result.facts == []
+
+
+@pytest.mark.parametrize("field", ["verdict", "reason"])
+@pytest.mark.parametrize("value", ["missing", None, "", "  ", True, 1, [], {}])
+def test_missing_or_invalid_judgment_evidence_is_unknown(harness, field, value):
+    payload = json.loads(reply_content())
+    payload["criteria"][0][field] = value
+    if value == "missing":
+        del payload["criteria"][0][field]
+    harness.create.return_value = response(json.dumps(payload))
+    result = asyncio.run(harness.run())
+    assert result.error is None
+    assert result.criteria[0].criterion == "title"
+    assert result.criteria[0].verdict == "unknown"
+    assert result.criteria[1].verdict == "met"
+    harness.create.assert_awaited_once()
+
+
+def test_unrecognized_verdict_is_unknown_instead_of_inferred_from_other_fields(harness):
+    harness.create.return_value = response(
+        reply_content(verdict="private-invalid-verdict", verdict_summary="met")
+    )
+    result = asyncio.run(harness.run())
+    assert result.error is None
+    assert all(item.verdict == "unknown" for item in result.criteria)
+    harness.assert_private_data_absent(result, "private-invalid-verdict")
+
+
+@pytest.mark.parametrize("verdict", ["unmet", "unknown"])
+def test_extra_fields_cannot_override_negative_or_unknown_judgment(harness, verdict):
+    payload = json.loads(reply_content(verdict=verdict))
+    payload["verdict"] = "met"
+    payload["success"] = True
+    for item in payload["criteria"]:
+        item["facts"] = ["looks successful"]
+        item["success"] = True
+    harness.create.return_value = response(json.dumps(payload))
+    result = asyncio.run(harness.run())
+    assert result.error is None
+    assert [item.verdict for item in result.criteria] == [verdict, verdict]
 
 
 @pytest.mark.parametrize("timeout", [False, True])
