@@ -557,10 +557,11 @@ test('ignores an active marker and cancels same-size orientation changes', async
   await page.mouse.up();
   await expect.poll(() => live.messages.at(-1)?.type).toBe('up');
   live.activeMarker = false;
+  const releasedReady = live.ready;
   await expect(
     page.getByRole('button', { name: '我已核对手机状态、释放按键，恢复控制' })
   ).not.toBeVisible();
-  await expect.poll(() => live.ready).toBeGreaterThan(ready + 3);
+  await expect.poll(() => live.ready).toBeGreaterThan(releasedReady + 1);
   await phone.hover();
   await page.mouse.down();
   await expect
