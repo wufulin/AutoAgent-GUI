@@ -13,13 +13,16 @@ Usage:
     app = create_app(scenario_path="scenarios/meituan_message/scenario.yaml")
 """
 
+import base64
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from PIL import Image
 from pydantic import BaseModel
 
 
@@ -48,6 +51,7 @@ class MockAgentState:
         self.commands: list[CommandRecord] = []
         self.state_machine = None
         self.scenario_path: str | None = None
+        self._placeholder_png: str | None = None
         self.available_devices: list[dict] = [
             {
                 "device_id": "mock_device_001",
@@ -89,10 +93,18 @@ class MockAgentState:
                 "height": result.height,
                 "is_sensitive": False,
             }
+        width, height = 1080, 2400
+        if self._placeholder_png is None:
+            # Lifecycle/UI tests need valid pixels even without a navigation
+            # scenario. Reuse the encoded image across their screenshot reads.
+            image = Image.new("RGB", (width, height), color=(245, 245, 245))
+            buffer = BytesIO()
+            image.save(buffer, format="PNG")
+            self._placeholder_png = base64.b64encode(buffer.getvalue()).decode("ascii")
         return {
-            "base64_data": "",
-            "width": 1080,
-            "height": 2400,
+            "base64_data": self._placeholder_png,
+            "width": width,
+            "height": height,
             "is_sensitive": False,
         }
 
