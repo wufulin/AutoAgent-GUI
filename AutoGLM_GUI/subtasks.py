@@ -284,6 +284,46 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError("Invalid JSON constant")
 
 
+def _normalize_verification_payload(payload: Any) -> Any:
+    """Tolerate presentation differences without inventing verification evidence."""
+    if not isinstance(payload, dict):
+        return payload
+    criteria = payload.get("criteria")
+    if isinstance(criteria, dict):
+        criteria = [criteria]
+    if isinstance(criteria, list):
+        normalized = []
+        for item in criteria:
+            if not isinstance(item, dict):
+                normalized.append(item)
+                continue
+            verdict = item.get("verdict")
+            verdict = verdict.strip().lower() if isinstance(verdict, str) else "unknown"
+            if verdict not in {"met", "unmet", "unknown"}:
+                verdict = "unknown"
+            reason = item.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                verdict = "unknown"
+                reason = "验证结果缺少明确的截图依据，无法确认。"
+            normalized.append(
+                {
+                    "criterion": item.get("criterion"),
+                    "verdict": verdict,
+                    "reason": reason,
+                }
+            )
+        criteria = normalized
+    facts = payload.get("facts")
+    if isinstance(facts, str):
+        facts = [facts]
+    facts = (
+        [fact for fact in facts if isinstance(fact, str) and fact.strip()][:20]
+        if isinstance(facts, list)
+        else []
+    )
+    return {"criteria": criteria, "facts": facts}
+
+
 def _verification_response_metadata(
     response: Any, diagnostics: VerificationDiagnostics
 ) -> None:
@@ -393,9 +433,8 @@ async def verify_completion(
                         '{"criteria":[{"criterion":"原条件逐字复制",'
                         '"verdict":"met或unmet或unknown","reason":"简短截图证据"}],'
                         '"facts":["简短可观察事实"]}。'
-                        "顶层仅含criteria和facts，不得有verdict。"
-                        "criteria必须是对象数组，不得是字符串数组；"
-                        "每个对象仅含criterion、verdict、reason三个字段。"
+                        "按上述结构提供每项条件的判断和截图依据；"
+                        "无法明确判断时返回unknown，不猜测成功。"
                         "每个JSON对象的键只能出现一次。每项条件必须检查，"
                         "每个criterion字段逐字复制对应的输入条件；"
                         "criteria内的对象与输入条件一一对应、顺序一致，不得遗漏或增加。"
@@ -453,8 +492,16 @@ async def verify_completion(
                     _verification_response_metadata(response, diagnostics)
                     diagnostics.stage = "parse"
                     try:
+                        content = (response.choices[0].message.content or "").strip()
+                        lines = content.splitlines()
+                        if (
+                            len(lines) >= 3
+                            and lines[0].lower() in {"```", "```json"}
+                            and lines[-1] == "```"
+                        ):
+                            content = "\n".join(lines[1:-1])
                         payload = json.loads(
-                            response.choices[0].message.content or "",
+                            content,
                             object_pairs_hook=_unique_json_object,
                             parse_constant=_reject_json_constant,
                         )
@@ -467,7 +514,9 @@ async def verify_completion(
                             "verification_json_invalid"
                         ) from None
                     try:
-                        reply = VerificationReply.model_validate(payload, strict=True)
+                        reply = VerificationReply.model_validate(
+                            _normalize_verification_payload(payload), strict=True
+                        )
                     except ValidationError as exc:
                         diagnostics.error_type = type(exc).__name__
                         diagnostics.validation_errors = _verification_validation_errors(
