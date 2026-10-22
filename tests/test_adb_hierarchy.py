@@ -158,6 +158,7 @@ def test_cleanup_error_preserves_original_capture_failure(monkeypatch, clock):
 @pytest.mark.parametrize(
     "payload",
     ["", "ERROR: could not get idle state", "<node/>", "<hierarchy>" + "x" * 2_000_000],
+    ids=["empty", "idle-error", "wrong-root", "oversized"],
 )
 def test_missing_hierarchy_or_oversized_output_is_rejected_and_cleaned(
     monkeypatch, clock, payload
