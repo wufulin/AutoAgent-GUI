@@ -559,6 +559,14 @@ export const zh = {
     layeredModeDesc: '规划层分解任务，执行层独立完成子任务',
   },
   historyPage: {
+    copyId: '复制对话 ID',
+    copyRecordId: '复制记录 ID',
+    recordId: '记录 ID',
+    conversationId: '对话 ID',
+    copyDetails: '复制完整详情',
+    copied: '已复制',
+    copyFailed: '复制失败，请重试或检查剪贴板权限',
+
     title: '对话历史',
     selectDevice: '选择设备',
     noDevices: '没有可用设备',

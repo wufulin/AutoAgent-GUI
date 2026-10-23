@@ -306,3 +306,65 @@ def test_planner_catalog_exposes_application_without_changing_identity(
     assert builtin["app"] == {"id": "dianping", "name": "大众点评"}
     assert builtin["version"] == 4
     assert set(builtin["parameters"]) == {"city", "shop_name"}
+
+
+@pytest.mark.parametrize("builtin", [True, False])
+def test_enabled_override_persists_for_all_pinned_revisions(tmp_path, builtin):
+    manager = SkillManager(tmp_path / "skills.json")
+    if builtin:
+        current = manager.get_skill("dianping_search_shops")
+        parameters = {"city": "北京", "shop_name": "喜茶"}
+    else:
+        original = manager.create_skill(definition())
+        current = manager.update_skill(original.id, original, 1)
+        parameters = {"contact": "张三"}
+    original_versions = [s.model_dump() for s in manager._load()]
+    disabled = manager.set_enabled(current.id, False, current.version, True)
+    assert not disabled.enabled and disabled.version == current.version
+    restarted = SkillManager(manager.path)
+    assert not next(s for s in restarted.list_skills() if s.id == current.id).enabled
+    assert not restarted.get_skill(current.id, 1).enabled
+    with pytest.raises(SkillError, match="disabled"):
+        restarted.compile_skill(current.id, 1, parameters)
+    with pytest.raises(SkillConflictError):
+        manager.set_enabled(current.id, False, current.version, True)
+    with pytest.raises(SkillConflictError):
+        manager.set_enabled(current.id, True, current.version + 1, False)
+    restarted.set_enabled(current.id, True, current.version, False)
+    assert (
+        SkillManager(manager.path).compile_skill(current.id, 1, parameters).version == 1
+    )
+    assert [s.model_dump() for s in manager._load()] == original_versions
+
+
+def test_enabled_override_preserved_by_edits_and_failed_writes(tmp_path, monkeypatch):
+    manager = SkillManager(tmp_path / "skills.json")
+    current = manager.create_skill(definition())
+    manager.set_enabled("open_wechat", False, 1, True)
+    manager.set_enabled(current.id, False, 1, True)
+    disabled = manager.get_skill(current.id)
+    updated = manager.update_skill(current.id, disabled, 1)
+    assert not updated.enabled
+    assert not manager.get_skill("open_wechat").enabled
+    manager.delete_skill(current.id, 2)
+    assert current.id not in manager._enabled_overrides()
+    before = manager.path.read_bytes()
+
+    def fail_replace(self, target):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(SkillStorageError):
+        manager.set_enabled("open_wechat", True, 1, False)
+    assert manager.path.read_bytes() == before
+    assert not manager.get_skill("open_wechat").enabled
+
+
+@pytest.mark.parametrize("value", [[], {"open_wechat": "false"}, {"bad id": False}])
+def test_invalid_enabled_settings_fail_closed(tmp_path, value):
+    path = tmp_path / "skills.json"
+    path.write_text(
+        json.dumps({"schema_version": 1, "skills": [], "enabled_overrides": value})
+    )
+    with pytest.raises(SkillStorageError):
+        SkillManager(path).compile_skill("open_wechat", 1, {})

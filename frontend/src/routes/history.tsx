@@ -1,3 +1,4 @@
+import { CopyButton } from '../components/CopyButton';
 import { ExecutionSummaryCard } from '../components/ExecutionSummaryCard';
 import { createFileRoute } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
@@ -361,6 +362,19 @@ export function HistoryComponent() {
                         {record.source_detail && `: ${record.source_detail}`}
                       </Badge>
 
+                      <CopyButton
+                        text={
+                          record.source !== 'scheduled' && record.source_detail
+                            ? record.source_detail
+                            : record.id
+                        }
+                        label={
+                          record.source !== 'scheduled' && record.source_detail
+                            ? t.historyPage.copyId
+                            : t.historyPage.copyRecordId
+                        }
+                      />
+
                       {/* Steps */}
                       {record.steps > 0 && (
                         <span className="text-slate-500 dark:text-slate-400">
@@ -487,6 +501,35 @@ export function HistoryComponent() {
               )}
               {t.historyPage.detailTitle || '对话详情'}
             </DialogTitle>
+            {selectedRecord && (
+              <div className="flex flex-wrap items-center gap-2 pr-6 text-xs text-muted-foreground">
+                <span className="break-all">
+                  {t.historyPage.recordId}: {selectedRecord.id}
+                </span>
+                <CopyButton
+                  text={selectedRecord.id}
+                  label={t.historyPage.copyRecordId}
+                />
+                {selectedRecord.source !== 'scheduled' &&
+                  selectedRecord.source_detail && (
+                    <>
+                      <span className="break-all">
+                        {t.historyPage.conversationId}:{' '}
+                        {selectedRecord.source_detail}
+                      </span>
+                      <CopyButton
+                        text={selectedRecord.source_detail}
+                        label={t.historyPage.copyId}
+                      />
+                    </>
+                  )}
+                <CopyButton
+                  text={JSON.stringify(selectedRecord, null, 2)}
+                  label={t.historyPage.copyDetails}
+                  showLabel
+                />
+              </div>
+            )}
           </DialogHeader>
 
           {selectedRecord && (

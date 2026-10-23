@@ -93,3 +93,21 @@ def test_application_metadata_and_builtin_copy(client):
         ).status_code
         == 400
     )
+
+
+def test_builtin_enabled_api_contract(client):
+    url = "/api/skills/open_wechat/enabled"
+    payload = {"expected_version": 1, "expected_enabled": True, "enabled": False}
+    response = client.patch(url, json=payload)
+    assert response.status_code == 200
+    assert response.json()["version"] == 1 and not response.json()["enabled"]
+    assert client.patch(url, json=payload).status_code == 409
+    assert not client.get("/api/skills/open_wechat?version=1").json()["enabled"]
+    assert client.patch(url, json={**payload, "enabled": "false"}).status_code == 422
+    response = client.patch(
+        url, json={**payload, "expected_enabled": False, "enabled": True}
+    )
+    assert response.status_code == 200 and response.json()["enabled"]
+    assert client.patch("/api/skills/missing/enabled", json=payload).status_code == 400
+    skills_api.skill_manager.path.write_text("{bad")
+    assert client.patch(url, json=payload).status_code == 503

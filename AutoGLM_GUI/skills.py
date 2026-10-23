@@ -475,6 +475,13 @@ class SkillManager:
                 or not isinstance(data.get("skills"), list)
             ):
                 raise ValueError("Unsupported skill catalog format")
+            overrides = data.get("enabled_overrides", {})
+            if not isinstance(overrides, dict) or any(
+                not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", key)
+                or type(value) is not bool
+                for key, value in overrides.items()
+            ):
+                raise ValueError("Invalid skill enable settings")
             retired_ids = data.get("retired_ids", [])
             if not isinstance(retired_ids, list) or any(
                 not isinstance(item, str)
@@ -508,8 +515,24 @@ class SkillManager:
         self._load()
         return json.loads(self.path.read_text(encoding="utf-8")).get("retired_ids", [])
 
+    def _enabled_overrides(self) -> dict[str, bool]:
+        if not self.path.exists():
+            return {}
+        self._load()
+        return json.loads(self.path.read_text(encoding="utf-8")).get(
+            "enabled_overrides", {}
+        )
+
+    def _with_enabled_override(self, skill: SkillDefinition) -> SkillDefinition:
+        enabled = self._enabled_overrides().get(skill.id, skill.enabled)
+        return skill.model_copy(update={"enabled": enabled}, deep=True)
+
     def _save(
-        self, skills: list[SkillDefinition], *, retired_ids: list[str] | None = None
+        self,
+        skills: list[SkillDefinition],
+        *,
+        retired_ids: list[str] | None = None,
+        enabled_overrides: dict[str, bool] | None = None,
     ) -> None:
         temp_path: Path | None = None
         try:
@@ -526,6 +549,9 @@ class SkillManager:
                 json.dump(
                     {
                         "schema_version": 1,
+                        "enabled_overrides": self._enabled_overrides()
+                        if enabled_overrides is None
+                        else enabled_overrides,
                         "retired_ids": self._retired_ids()
                         if retired_ids is None
                         else retired_ids,
@@ -550,7 +576,7 @@ class SkillManager:
             for skill in self._load():
                 if skill.id not in latest or skill.version > latest[skill.id].version:
                     latest[skill.id] = skill
-            return [skill.model_copy(deep=True) for skill in latest.values()]
+            return [self._with_enabled_override(skill) for skill in latest.values()]
 
     def get_skill(
         self, skill_id: str, version: int | None = None
@@ -564,7 +590,9 @@ class SkillManager:
                 and (version is None or skill.version == version)
             ]
             return (
-                max(candidates, key=lambda skill: skill.version).model_copy(deep=True)
+                self._with_enabled_override(
+                    max(candidates, key=lambda skill: skill.version)
+                )
                 if candidates
                 else None
             )
@@ -582,6 +610,29 @@ class SkillManager:
             if skill is None:
                 raise SkillError("Skill version not found")
             return skill.compile(parameters)
+
+    def set_enabled(
+        self,
+        skill_id: str,
+        enabled: bool,
+        expected_version: int,
+        expected_enabled: bool,
+    ) -> SkillDefinition:
+        """Change availability for every revision without editing the definition."""
+        with self._write_lock():
+            current = self.get_skill(skill_id)
+            if current is None:
+                raise SkillError("Skill not found")
+            if (
+                current.version != expected_version
+                or current.enabled != expected_enabled
+            ):
+                raise SkillConflictError(
+                    "Skill changed; reload before changing availability"
+                )
+            overrides = {**self._enabled_overrides(), skill_id: enabled}
+            self._save(self._load(), enabled_overrides=overrides)
+            return current.model_copy(update={"enabled": enabled}, deep=True)
 
     def create_skill(self, skill: SkillDefinition) -> SkillDefinition:
         with self._write_lock():
@@ -612,7 +663,13 @@ class SkillManager:
             updated = skill.model_copy(
                 update={"version": expected_version + 1}, deep=True
             )
-            self._save([*self._load(), updated])
+            self._save(
+                [*self._load(), updated],
+                enabled_overrides={
+                    **self._enabled_overrides(),
+                    skill_id: skill.enabled,
+                },
+            )
             return updated
 
     def delete_skill(self, skill_id: str, expected_version: int) -> bool:
@@ -629,6 +686,11 @@ class SkillManager:
             self._save(
                 [skill for skill in self._load() if skill.id != skill_id],
                 retired_ids=[*self._retired_ids(), skill_id],
+                enabled_overrides={
+                    key: value
+                    for key, value in self._enabled_overrides().items()
+                    if key != skill_id
+                },
             )
             return True
 

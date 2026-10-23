@@ -581,6 +581,14 @@ export const en = {
       'Planner decomposes tasks, executor handles subtasks independently',
   },
   historyPage: {
+    copyId: 'Copy conversation ID',
+    copyRecordId: 'Copy record ID',
+    recordId: 'Record ID',
+    conversationId: 'Conversation ID',
+    copyDetails: 'Copy full details',
+    copied: 'Copied',
+    copyFailed: 'Copy failed. Retry or check clipboard permissions.',
+
     title: 'Conversation History',
     selectDevice: 'Select Device',
     noDevices: 'No devices available',
