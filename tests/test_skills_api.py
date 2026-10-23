@@ -71,7 +71,7 @@ def test_application_metadata_and_builtin_copy(client):
     builtin = response.json()
     assert builtin["app"] == {"id": "dianping", "name": "大众点评"}
     assert builtin["icon"] == "search" and builtin["builtin"]
-    assert builtin["version"] == 3
+    assert builtin["version"] == 4
     copied = {
         **builtin,
         "id": "my_dianping_search",

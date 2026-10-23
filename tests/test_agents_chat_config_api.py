@@ -144,6 +144,7 @@ class FakeConfigManager:
     def __init__(self) -> None:
         self.effective_config = SimpleNamespace(
             iphone_vision=None,
+            skill_vision=None,
             base_url="http://localhost:8080/v1",
             model_name="autoglm-phone-9b",
             api_key="EMPTY",

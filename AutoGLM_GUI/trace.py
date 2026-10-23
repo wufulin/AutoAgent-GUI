@@ -451,6 +451,12 @@ def write_replay_event(
                 "screen_width": payload.get("screen_width"),
                 "screen_height": payload.get("screen_height"),
                 "subtask_failed": payload.get("subtask_failed"),
+                "observation_id": payload.get("observation_id"),
+                "observation_session_id": payload.get("observation_session_id"),
+                "geometry_id": payload.get("geometry_id"),
+                "action_sequence": payload.get("action_sequence"),
+                "observation_source": payload.get("observation_source"),
+                "skill_phase": payload.get("skill_phase"),
             }
         elif event_type == "step":
             record["step"] = _normalize_step_payload(

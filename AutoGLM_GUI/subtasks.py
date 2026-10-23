@@ -164,7 +164,9 @@ async def collect_execution(
                 finished=data.get("finished"),
                 message=data.get("message"),
                 agent_type=agent.__class__.__name__,
-                model_name=agent.model_config.model_name,
+                model_name=getattr(
+                    agent, "executor_config", agent.model_config
+                ).model_name,
             )
         elif kind == "error":
             error_seen = True
@@ -604,6 +606,7 @@ class SubtaskState:
     agent: AsyncAgent
     feedback: str | None = None
     dianping_parameters: tuple[str, str] | None = None
+    visual_dianping_parameters: tuple[str, str] | None = None
 
 
 @dataclass
@@ -867,6 +870,7 @@ class SubtaskRunContext:
         checkpoint: str | None = None,
         *,
         dianping_parameters: tuple[str, str] | None = None,
+        visual_dianping_parameters: tuple[str, str] | None = None,
     ) -> SubtaskResult:
         constraints = [*self.task_constraints, *constraints]
         failure = SubtaskResult(
@@ -915,6 +919,7 @@ class SubtaskRunContext:
                     max_steps,
                     checkpoint,
                     dianping_parameters=dianping_parameters,
+                    visual_dianping_parameters=visual_dianping_parameters,
                 )
             except asyncio.CancelledError:
                 self.cancelled = True
@@ -942,15 +947,21 @@ class SubtaskRunContext:
         checkpoint: str | None,
         *,
         dianping_parameters: tuple[str, str] | None = None,
+        visual_dianping_parameters: tuple[str, str] | None = None,
     ) -> SubtaskResult:
         from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
 
         manager = PhoneAgentManager.get_instance()
-        if device_id.startswith("rmq1:") and (
-            not self.ios_group_name or self.ios_phase not in {"open", "search", "enter"}
+        if (
+            device_id.startswith("rmq1:")
+            and visual_dianping_parameters is None
+            and (
+                not self.ios_group_name
+                or self.ios_phase not in {"open", "search", "enter"}
+            )
         ):
             return self.stop(
-                goal, "iphone_skill_required", "iPhone 仅允许已授权微信群导航技能。"
+                goal, "iphone_skill_required", "iPhone 需要已授权的平台技能。"
             )
         state = self.checkpoints.pop(checkpoint, None) if checkpoint else None
         if checkpoint and (
@@ -960,6 +971,7 @@ class SubtaskRunContext:
             or state.result.success_criteria != criteria
             or state.constraints != constraints
             or state.dianping_parameters != dianping_parameters
+            or state.visual_dianping_parameters != visual_dianping_parameters
         ):
             return self._record(
                 SubtaskResult(
@@ -990,7 +1002,7 @@ class SubtaskRunContext:
                 device_id, context=self.owner, agent_type=None
             )
             self.agents[device_id] = agent
-            if device_id.startswith("rmq1:"):
+            if device_id.startswith("rmq1:") and visual_dianping_parameters is None:
                 from AutoGLM_GUI.agents.rmq1 import Rmq1VisionAgent
 
                 if not isinstance(agent, Rmq1VisionAgent):
@@ -1007,6 +1019,23 @@ class SubtaskRunContext:
                         prompt + "\n\n" + LAYERED_EXECUTOR_INSTRUCTIONS
                     )
             agent.reset()
+            if visual_dianping_parameters is not None:
+                from AutoGLM_GUI.agents.visual_dianping import VisualDianpingAgent
+
+                override = config_manager.get_effective_config().skill_vision
+                executor_config = (
+                    ModelConfig(**override.model_dump())
+                    if override
+                    else agent.model_config
+                )
+                # Keep platform verifier credentials separate from the policy.
+                client = getattr(agent, "openai_client", None)
+                if client is not None:
+                    await client.close()
+                agent = VisualDianpingAgent(
+                    agent, executor_config, *visual_dianping_parameters
+                )
+                self.agents[device_id] = agent
             from AutoGLM_GUI.agents.gemini.async_agent import AsyncGeminiAgent
 
             if isinstance(agent, AsyncGeminiAgent):
@@ -1034,6 +1063,7 @@ class SubtaskRunContext:
                 constraints,
                 agent,
                 dianping_parameters=dianping_parameters,
+                visual_dianping_parameters=visual_dianping_parameters,
             )
         else:
             agent = state.agent

@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from AutoGLM_GUI.execution_models import ExecutionRequest
-from AutoGLM_GUI.config_manager import IPhoneVisionConfig
+from AutoGLM_GUI.config_manager import IPhoneVisionConfig, SkillVisionConfig
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -278,6 +278,7 @@ class ConfigResponse(BaseModel):
     """配置读取响应."""
 
     iphone_vision: IPhoneVisionConfig | None = None
+    skill_vision: SkillVisionConfig | None = None
 
     base_url: str
     model_name: str
@@ -310,6 +311,7 @@ class ConfigSaveRequest(BaseModel):
     """配置保存请求."""
 
     iphone_vision: IPhoneVisionConfig | None = None
+    skill_vision: SkillVisionConfig | None = None
 
     base_url: str
     model_name: str = "autoglm-phone-9b"
