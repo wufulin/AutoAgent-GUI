@@ -205,10 +205,10 @@ def test_dianping_builtin_and_legacy_revisions_coexist_without_rewriting(tmp_pat
     original = path.read_bytes()
     manager = SkillManager(path)
     builtin = manager.get_skill("dianping_search_shops")
-    assert builtin is not None and builtin.builtin and builtin.version == 3
+    assert builtin is not None and builtin.builtin and builtin.version == 4
     assert builtin.app is not None and builtin.app.id == "dianping"
-    assert builtin.icon == "search" and builtin.platforms == ["android"]
-    assert (builtin.max_steps, builtin.max_seconds) == (40, 600)
+    assert builtin.icon == "search" and builtin.platforms == ["android", "ios"]
+    assert (builtin.max_steps, builtin.max_seconds) == (60, 600)
     compiled = manager.compile_skill(
         builtin.id, 1, {"city": "广州", "shop_name": "霸王茶姬"}
     )
@@ -231,8 +231,8 @@ def test_dianping_builtin_and_legacy_revisions_coexist_without_rewriting(tmp_pat
     assert conditioned.builtin
     assert conditioned.steps[0].success_criteria == continuous.steps[0].success_criteria
     assert conditioned.success_criteria == continuous.success_criteria
-    assert manager.get_skill(builtin.id, 4) is None
-    assert [s.version for s in manager.list_skills() if s.id == builtin.id] == [3]
+    assert manager.get_skill(builtin.id, 5) is None
+    assert [s.version for s in manager.list_skills() if s.id == builtin.id] == [4]
     for parameters in [{}, {"city": "广州"}, {"city": "广州", "shop_name": ""}]:
         with pytest.raises(SkillError):
             manager.compile_skill(builtin.id, 1, parameters)
@@ -304,5 +304,5 @@ def test_planner_catalog_exposes_application_without_changing_identity(
     )
     builtin = next(item for item in result if item["id"] == "dianping_search_shops")
     assert builtin["app"] == {"id": "dianping", "name": "大众点评"}
-    assert builtin["version"] == 3
+    assert builtin["version"] == 4
     assert set(builtin["parameters"]) == {"city", "shop_name"}

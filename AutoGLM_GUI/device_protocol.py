@@ -24,6 +24,18 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 
+@dataclass(frozen=True, slots=True)
+class FrameReference:
+    """Opaque transport frame binding; pixels alone never authorize RMQ1 input."""
+
+    session_id: str
+    geometry_id: str
+    frame_id: str
+    width: int
+    height: int
+    content_rect: tuple[float, float, float, float]
+
+
 @dataclass
 class Screenshot:
     """Screenshot result from device."""
@@ -32,6 +44,7 @@ class Screenshot:
     width: int
     height: int
     is_sensitive: bool = False
+    frame: FrameReference | None = None
 
 
 @dataclass

@@ -82,8 +82,28 @@ class IPhoneVisionConfig(BaseModel):
         return value.strip()
 
 
+class SkillVisionConfig(IPhoneVisionConfig):
+    """Optional visual skill executor; completion keeps the platform verifier."""
+
+    @field_validator("base_url")
+    @classmethod
+    def url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("Visual skill model URL must use http:// or https://")
+        return value
+
+    @field_validator("model_name")
+    @classmethod
+    def name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Visual skill model name is required")
+        return value.strip()
+
+
 class ConfigFileData(TypedDict, total=False):
     iphone_vision: dict[str, Any] | None
+    skill_vision: dict[str, Any] | None
     base_url: str
     model_name: str
     api_key: str
@@ -101,6 +121,7 @@ class ConfigModel(BaseModel):
     """类型安全的配置模型，使用 Pydantic 进行验证."""
 
     iphone_vision: IPhoneVisionConfig | None = None
+    skill_vision: SkillVisionConfig | None = None
 
     base_url: str = ""
     model_name: str = "autoglm-phone-9b"
@@ -222,6 +243,7 @@ class ConfigLayer:
     decision_api_key: str | None = None
 
     iphone_vision: dict[str, Any] | None = None
+    skill_vision: dict[str, Any] | None = None
 
     source: ConfigSource = ConfigSource.DEFAULT
     explicit_keys: set[str] = field(default_factory=set, repr=False)
@@ -235,6 +257,7 @@ class ConfigLayer:
         """转换为字典，保留显式 null 字段."""
         data = {
             "iphone_vision": self.iphone_vision,
+            "skill_vision": self.skill_vision,
             "base_url": self.base_url,
             "model_name": self.model_name,
             "api_key": self.api_key,
@@ -488,6 +511,7 @@ class UnifiedConfigManager:
             # 更新文件层
             file_values = {
                 "iphone_vision": config_data.get("iphone_vision"),
+                "skill_vision": config_data.get("skill_vision"),
                 "base_url": config_data.get("base_url"),
                 "model_name": config_data.get("model_name"),
                 "api_key": config_data.get("api_key"),
@@ -543,6 +567,8 @@ class UnifiedConfigManager:
         layered_max_turns_set: bool = False,
         iphone_vision: IPhoneVisionConfig | None = None,
         iphone_vision_set: bool = False,
+        skill_vision: SkillVisionConfig | None = None,
+        skill_vision_set: bool = False,
     ) -> bool:
         """
         保存配置到文件，支持合并模式.
@@ -601,6 +627,11 @@ class UnifiedConfigManager:
                     iphone_vision.model_dump() if iphone_vision is not None else None
                 )
 
+            if skill_vision_set:
+                new_config["skill_vision"] = (
+                    skill_vision.model_dump() if skill_vision is not None else None
+                )
+
             previous_agent_type = self.get_effective_config().agent_type
 
             # 合并模式：保留现有文件中未提供的字段
@@ -615,6 +646,7 @@ class UnifiedConfigManager:
                     # 保留未提供的字段
                     preserve_keys = [
                         "iphone_vision",
+                        "skill_vision",
                         "api_key",
                         "temperature",
                         "agent_type",
@@ -721,6 +753,7 @@ class UnifiedConfigManager:
         # 所有配置字段
         config_keys = [
             "iphone_vision",
+            "skill_vision",
             "base_url",
             "model_name",
             "api_key",

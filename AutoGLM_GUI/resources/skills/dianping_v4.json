@@ -1,0 +1,62 @@
+{
+  "id": "dianping_search_shops",
+  "version": 4,
+  "name": "大众点评：按城市搜索店铺",
+  "description": "纯视觉读取统一 Observation，按条件完成城市和关键词搜索，保留最终独立验收。支持 Android 与 RMQ1 iPhone；可固定 v2 或 v3 回退。",
+  "goal": "在大众点评首页选择城市 {{city}}，搜索 {{shop_name}}，停在该城市的商户搜索结果列表。",
+  "parameters": {
+    "city": {
+      "type": "string",
+      "description": "城市中文名，例如广州、深圳",
+      "required": true,
+      "default": null,
+      "enum": null
+    },
+    "shop_name": {
+      "type": "string",
+      "description": "品牌或店名的准确中文，例如霸王茶姬、古茗",
+      "required": true,
+      "default": null,
+      "enum": null
+    }
+  },
+  "preconditions": [],
+  "constraints": [
+    "只允许本任务的首页、城市选择、关键词输入、搜索和商户标签导航。",
+    "不进入商户详情、不下单、不支付、不发送消息。",
+    "只依赖截图判断页面；无法确认、遮挡或动作结果未知时停止。iPhone 只通过可见中文拼音键盘输入。",
+    "城市目标需在当前历史访问或热门城市列表可见；不猜测坐标。"
+  ],
+  "steps": [
+    {
+      "id": "search_shops",
+      "goal": "根据当前截图完成大众点评搜索：核对城市 {{city}}，在真实搜索框输入完整 {{shop_name}}，核对全文后只提交一次，选中商户并显示目标城市至少两个匹配门店，再申请独立验收。未知页面、目标歧义、输入不符或动作结果未知时停止；不得点击历史词代替输入。",
+      "success_criteria": [
+        "搜索框完整中文文本与本步骤目标指定的店名完全一致。",
+        "商户或店铺分类已选中，列表已加载；至少两个可见门店名称包含目标指定的店名。",
+        "结果页可见的城市标识或门店地址明确属于本步骤目标指定的城市。"
+      ],
+      "constraints": [],
+      "max_steps": 20,
+      "effect": "navigation",
+      "max_resumes": 2
+    }
+  ],
+  "success_criteria": [
+    "当前停在大众点评商户或店铺搜索结果列表，搜索框完整中文与本任务目标指定的店名完全一致。",
+    "至少两个可见门店名称包含目标店名，结果页的城市标识或门店地址明确属于本任务目标指定的城市。"
+  ],
+  "max_steps": 60,
+  "max_seconds": 600,
+  "enabled": true,
+  "builtin": true,
+  "app": {
+    "id": "dianping",
+    "name": "大众点评"
+  },
+  "icon": "search",
+  "platforms": [
+    "android",
+    "ios"
+  ]
+}

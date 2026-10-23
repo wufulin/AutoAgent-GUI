@@ -22,6 +22,17 @@ def resolve_route(
 ) -> tuple[str, str, CompiledSkill | None]:
     """No semantic guessing or LLM call is needed for exact known skill commands."""
     if device_id and device_id.startswith("rmq1:"):
+        if (
+            request.route == "skill"
+            and request.skill_id == "dianping_search_shops"
+            and request.skill_version == 4
+        ):
+            visual_skill = skill_manager.compile_skill(
+                request.skill_id, 4, request.parameters
+            )
+            if not visual_skill.builtin:
+                raise ValueError("iPhone requires the built-in visual skill")
+            return "skill", "explicit_iphone_visual_skill", visual_skill
         if request.route == "skill" and request.skill_id == "ios_wechat_open_group":
             return (
                 "skill",
@@ -51,9 +62,7 @@ def resolve_route(
                         "ios_wechat_open_group", 1, {"group_name": name}
                     ),
                 )
-        raise ValueError(
-            "RMQ1 首版仅支持搜索并进入指定微信群；请选择技能并填写精确群名"
-        )
+        raise ValueError("RMQ1 请明确选择微信群导航或大众点评纯视觉技能并填写准确参数")
     if request.route == "skill":
         assert request.skill_id is not None and request.skill_version is not None
         return (
@@ -119,14 +128,18 @@ async def execute_skill(
             skill.goal, "skill_platform_mismatch", "该技能不支持当前设备平台。"
         )
     if platform == "ios":
-        if skill.id != "ios_wechat_open_group":
+        visual_dianping = (
+            skill.builtin and skill.id == "dianping_search_shops" and skill.version == 4
+        )
+        if skill.id != "ios_wechat_open_group" and not visual_dianping:
             return context.stop(
                 skill.goal,
                 "iphone_skill_unsupported",
-                "iPhone 首版仅支持微信群导航技能。",
+                "iPhone 仅支持已列出的平台技能。",
             )
-        context.ios_group_name = str(skill.parameters["group_name"])
-        context.ios_search_verified = False
+        if skill.id == "ios_wechat_open_group":
+            context.ios_group_name = str(skill.parameters["group_name"])
+            context.ios_search_verified = False
     original_budget = context.max_steps
     skill_limit = context.total_steps + skill.max_steps
     context.max_steps = (
@@ -148,7 +161,7 @@ async def execute_skill(
                     return result
             result = None
             for index, step in enumerate(skill.steps):
-                if platform == "ios":
+                if platform == "ios" and skill.id == "ios_wechat_open_group":
                     context.ios_phase = step.id
                 last_step = index == len(skill.steps) - 1
                 criteria = list(step.success_criteria)
@@ -216,9 +229,14 @@ async def execute_skill(
                     if (
                         skill.builtin
                         and skill.id == "dianping_search_shops"
-                        and skill.version == 3
+                        and skill.version in {3, 4}
                     ):
-                        execution_options["dianping_parameters"] = (
+                        parameter_key = (
+                            "visual_dianping_parameters"
+                            if skill.version == 4
+                            else "dianping_parameters"
+                        )
+                        execution_options[parameter_key] = (
                             str(skill.parameters["city"]),
                             str(skill.parameters["shop_name"]),
                         )
@@ -240,6 +258,17 @@ async def execute_skill(
                         if platform == "ios" and step.id == "search":
                             context.ios_search_verified = True
                         break
+                    if (
+                        skill.builtin
+                        and skill.id == "dianping_search_shops"
+                        and skill.version == 4
+                        and result.verification is not None
+                    ):
+                        return context.stop(
+                            skill.goal,
+                            "visual_final_not_verified",
+                            "最终独立验收未通过，已停止；不会重放搜索或重复验收。",
+                        )
                     if last_step and result.verification:
                         verification = result.verification
                         checked = verification.criteria
@@ -281,6 +310,26 @@ async def execute_skill(
                         )
                     # Only fresh criterion progress can grant additional segments.
                     # A changing screenshot is deliberately not treated as progress.
+                    if (
+                        skill.builtin
+                        and skill.id == "dianping_search_shops"
+                        and skill.version == 4
+                        and result.stop_reason == "step_budget_reached"
+                    ):
+                        # This bounded policy retains its condition/action state;
+                        # extra segments never replay input or re-run acceptance.
+                        checkpoint = result.checkpoint
+                        emit(
+                            context,
+                            "execution_continuation",
+                            {
+                                "skill_id": skill.id,
+                                "step_id": step.id,
+                                "attempt": attempt + 1,
+                                "reason": "visual_policy_budget_segment",
+                            },
+                        )
+                        continue
                     observed = result.verification or await context.observe(
                         device_id, goal, criteria
                     )

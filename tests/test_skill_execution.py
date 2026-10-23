@@ -535,3 +535,70 @@ def test_conditioned_profile_is_only_passed_for_exact_builtin_revision(
         await context.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("verdict", ["met", "unmet"])
+def test_visual_skill_segments_share_one_final_verifier(monkeypatch, tmp_path, verdict):
+    """Budget segmentation must not reintroduce intermediate model acceptance."""
+    from AutoGLM_GUI.agents import visual_dianping
+
+    context, agent, _, timeline = setup(
+        monkeypatch,
+        [
+            [
+                event("step"),
+                event("done", status="partial", stop_reason="step_budget_reached"),
+            ],
+            [event("step"), event("done", success=True)],
+        ],
+        verdicts=[verdict],
+    )
+    bound = []
+
+    def wrap(original, executor_config, city, keyword):
+        bound.append((original, executor_config, city, keyword))
+        return original
+
+    monkeypatch.setattr(visual_dianping, "VisualDianpingAgent", wrap)
+    context.observe = AsyncMock(
+        side_effect=AssertionError("unexpected intermediate verification")
+    )
+    compiled = SkillManager(tmp_path / "skills.json").compile_skill(
+        "dianping_search_shops", 4, {"city": "广州", "shop_name": "霸王茶姬"}
+    )
+
+    async def run():
+        result = await execute_skill(context, "phone", compiled)
+        assert result.success is (verdict == "met")
+        if verdict == "unmet":
+            assert result.stop_reason == "visual_final_not_verified"
+        assert context.continuations == 1
+        context.observe.assert_not_called()
+        assert len(bound) == 1 and bound[0][2:] == ("广州", "霸王茶姬")
+        assert [row[0] for row in timeline] == ["execute", "execute", "verify"]
+        await context.close()
+
+    asyncio.run(run())
+
+
+def test_untrusted_v4_copy_does_not_bind_visual_executor(monkeypatch, tmp_path):
+    from dataclasses import replace
+    from AutoGLM_GUI.agents import visual_dianping
+
+    context, _, _, _ = setup(monkeypatch, [[event("done", success=True)]])
+    monkeypatch.setattr(
+        visual_dianping,
+        "VisualDianpingAgent",
+        lambda *args: pytest.fail("untrusted binding"),
+    )
+    compiled = SkillManager(tmp_path / "skills.json").compile_skill(
+        "dianping_search_shops", 4, {"city": "广州", "shop_name": "霸王茶姬"}
+    )
+
+    async def run():
+        assert (
+            await execute_skill(context, "phone", replace(compiled, builtin=False))
+        ).success
+        await context.close()
+
+    asyncio.run(run())

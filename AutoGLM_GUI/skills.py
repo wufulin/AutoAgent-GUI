@@ -399,7 +399,12 @@ class SkillManager:
                 SkillDefinition.model_validate_json(
                     (builtin_root / name).read_text(encoding="utf-8")
                 )
-                for name in ("dianping.json", "dianping_v2.json", "dianping_v3.json")
+                for name in (
+                    "dianping.json",
+                    "dianping_v2.json",
+                    "dianping_v3.json",
+                    "dianping_v4.json",
+                )
             ),
         ]
         # Keep pinned built-in revisions executable while discovery offers only

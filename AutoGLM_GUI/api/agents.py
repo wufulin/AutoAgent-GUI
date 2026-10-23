@@ -218,6 +218,7 @@ def get_config_endpoint() -> ConfigResponse:
 
     return ConfigResponse(
         iphone_vision=effective_config.iphone_vision,
+        skill_vision=effective_config.skill_vision,
         base_url=effective_config.base_url,
         model_name=effective_config.model_name,
         api_key=effective_config.api_key if effective_config.api_key != "EMPTY" else "",
@@ -300,6 +301,8 @@ def save_config_endpoint(request: ConfigSaveRequest) -> dict[str, Any]:
                 layered_max_turns_set="layered_max_turns" in provided_fields,
                 iphone_vision=request.iphone_vision,
                 iphone_vision_set="iphone_vision" in provided_fields,
+                skill_vision=request.skill_vision,
+                skill_vision_set="skill_vision" in provided_fields,
             )
 
             if not success:

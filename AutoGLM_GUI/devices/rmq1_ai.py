@@ -14,7 +14,8 @@ from uuid import uuid4
 
 from PIL import Image, ImageChops, ImageFilter, ImageStat
 
-from AutoGLM_GUI.device_protocol import Screenshot
+from AutoGLM_GUI.device_protocol import FrameReference, Screenshot
+from AutoGLM_GUI.observation import Observation, StaleObservationError
 from AutoGLM_GUI.devices.async_adapter import AsyncDeviceAdapter
 from AutoGLM_GUI.devices.rmq1 import RMQ1Device
 from AutoGLM_GUI.devices.rmq1_live import LiveGesture
@@ -169,7 +170,17 @@ class Rmq1AIAdapter(AsyncDeviceAdapter):
         encoded = io.BytesIO()
         image.save(encoded, "PNG")
         screenshot = Screenshot(
-            base64.b64encode(encoded.getvalue()).decode(), image.width, image.height
+            base64.b64encode(encoded.getvalue()).decode(),
+            image.width,
+            image.height,
+            frame=FrameReference(
+                payload["session_id"],
+                payload["geometry_id"],
+                payload["frame_id"],
+                w,
+                h,
+                (rect["x"], rect["y"], rect["width"], rect["height"]),
+            ),
         )
         return AIObservation(
             screenshot,
@@ -187,6 +198,49 @@ class Rmq1AIAdapter(AsyncDeviceAdapter):
 
     async def get_current_app(self) -> str:
         return "unknown (visual iOS observation only)"
+
+    async def execute_observation(
+        self,
+        observed: Observation,
+        *,
+        x: int,
+        y: int,
+        end: tuple[int, int] | None = None,
+        duration_ms: int = 100,
+    ) -> dict[str, Any]:
+        """Use the common observation without losing RMQ1's frame/lease guard."""
+        if (
+            observed.frame is None
+            or not self.observations.is_current(observed, max_age_seconds=30)
+            or self.pending_writes
+            or self.outcome_unknown
+        ):
+            raise StaleObservationError("iPhone observation is no longer current")
+        ref = observed.frame
+        shot = observed.screenshot
+        with Image.open(
+            io.BytesIO(base64.b64decode(shot.base64_data, validate=True))
+        ) as raw:
+            pixels = raw.convert("RGB")
+        native = AIObservation(
+            shot,
+            pixels,
+            ref.session_id,
+            ref.geometry_id,
+            ref.frame_id,
+            ref.width,
+            ref.height,
+            dict(zip(("x", "y", "width", "height"), ref.content_rect, strict=True)),
+        )
+        self.observations.action_started()
+        try:
+            # execute obtains a fresh transport frame, compares scene and target,
+            # then binds input to that exact frame through LiveGesture.
+            return await self.execute(
+                native, x=x, y=y, end=end, duration_ms=duration_ms
+            )
+        finally:
+            self.observations.action_completed()
 
     async def execute(
         self,

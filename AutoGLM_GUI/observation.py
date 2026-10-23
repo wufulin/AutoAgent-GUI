@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from AutoGLM_GUI.device_protocol import Screenshot
+from AutoGLM_GUI.device_protocol import FrameReference, Screenshot
 
 
 class ScreenshotSource(Protocol):
@@ -50,10 +50,13 @@ class Observation:
     _base64_data: str = field(repr=False)
     _width: int
     _height: int
+    frame: FrameReference | None = None
 
     @property
     def screenshot(self) -> Screenshot:
-        return Screenshot(self._base64_data, self._width, self._height)
+        return Screenshot(
+            self._base64_data, self._width, self._height, frame=self.frame
+        )
 
     def age_seconds(self, now: float | None = None) -> float:
         return (time.monotonic() if now is None else now) - self.capture_started_at
@@ -91,7 +94,7 @@ class ObservationBroker:
         self._generation = 0
         self._action_sequence = 0
         self._geometry_generation = 0
-        self._geometry: tuple[int, int] | None = None
+        self._geometry: tuple[int, int, str | None, str | None] | None = None
         self._geometry_capture_sequence = 0
         self._capture_sequence = 0
         self._sharing_epoch = 0
@@ -233,7 +236,13 @@ class ObservationBroker:
             or not screenshot.base64_data
         ):
             raise InvalidObservationError("capture is sensitive or invalid")
-        geometry = screenshot.width, screenshot.height
+        frame = getattr(screenshot, "frame", None)
+        geometry = (
+            screenshot.width,
+            screenshot.height,
+            frame.session_id if frame else None,
+            frame.geometry_id if frame else None,
+        )
         if geometry != self._geometry:
             # A slower older request must not restore obsolete geometry after a
             # more recent independent capture has already observed a new layout.
@@ -255,4 +264,5 @@ class ObservationBroker:
             _base64_data=screenshot.base64_data,
             _width=screenshot.width,
             _height=screenshot.height,
+            frame=frame,
         )
