@@ -72,6 +72,7 @@ VISUAL_PROMPT = """你是手机截图读取器，服务于大众点评城市+关
 坐标必须分别按图像宽高归一化：x=目标像素横坐标/图像宽度*1000，y=目标像素纵坐标/图像高度*1000。
 左上角(0,0)，右下角(1000,1000)，中心(500,500)。不要返回原始像素，也不要把宽度当作纵轴分母。
 page: launcher主屏幕/home点评首页/city_picker城市选择/search_input搜索编辑页/results搜索结果/loading加载/unknown。
+launcher只指手机操作系统桌面（app必须为launcher），不是App首页；有点评导航/搜索栏的首页必须为home。
 app: dianping/launcher/unknown。登录、权限、广告弹窗、验证码、锁屏或遮挡使 blocked=true。
 city只填可见城市文字，不从任务参数猜测；query只填搜索框实际完整文字，不能填灰色推荐词或历史词。
 focused_search须有搜索框焦点或输入光标和键盘证据。keyboard为none/zh_pinyin_full/other。

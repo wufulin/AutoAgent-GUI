@@ -38,15 +38,15 @@ DECISION_MAX_AGE = 30.0
 
 
 def blank_loading_frame(screenshot: Screenshot) -> bool:
-    """Only suppress policy on nearly white empty bodies; never authorize input."""
+    """Only suppress policy on empty light bodies; never authorize input."""
     with Image.open(
         BytesIO(base64.b64decode(screenshot.base64_data, validate=True))
     ) as image:
         if image.size != (screenshot.width, screenshot.height):
             raise ValueError("invalid screenshot geometry")
         thumb = image.convert("L").resize((60, 120))
-        body = list(thumb.crop((0, 8, 60, 114)).tobytes())
-        return sum(pixel >= 248 for pixel in body) / len(body) >= 0.997
+        body = list(thumb.crop((0, 18, 60, 114)).tobytes())
+        return sum(pixel >= 240 for pixel in body) / len(body) >= 0.997
 
 
 def protected_regions_match(
