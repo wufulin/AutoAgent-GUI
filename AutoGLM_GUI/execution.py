@@ -560,7 +560,7 @@ class ExecutionRun:
                 self.context.stop(
                     self.message,
                     "invalid_execution_request",
-                    "技能、版本或参数无效；RMQ1 首版请使用搜索并进入微信群技能并填写精确群名。",
+                    "技能、版本或参数无效；iPhone 请使用微信群导航或大众点评纯视觉技能，并填写完整参数。",
                 )
             except Exception:
                 self.context.stop(

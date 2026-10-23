@@ -638,6 +638,7 @@ class SubtaskRunContext:
     _leased: set[str] = field(default_factory=set)
     _active: set[asyncio.Task[Any]] = field(default_factory=set)
     _cleanup_task: asyncio.Task[None] | None = None
+    _visual_clients: dict[int, Any] = field(default_factory=dict, repr=False)
     _verifier_client: Any = field(default=None, repr=False)
     _verifier_stack: AsyncExitStack | None = field(default=None, repr=False)
     _verifier_fingerprint: str | None = field(default=None, repr=False)
@@ -1024,17 +1025,25 @@ class SubtaskRunContext:
 
                 override = config_manager.get_effective_config().skill_vision
                 executor_config = (
-                    ModelConfig(**override.model_dump())
+                    ModelConfig(
+                        **(
+                            override.model_dump()
+                            | {"api_key": override.api_key or "EMPTY"}
+                        )
+                    )
                     if override
                     else agent.model_config
                 )
-                # Keep platform verifier credentials separate from the policy.
+                # The managed agent can be reused by later subgoals in this run.
                 client = getattr(agent, "openai_client", None)
                 if client is not None:
-                    await client.close()
+                    self._visual_clients[id(client)] = client
                 agent = VisualDianpingAgent(
                     agent, executor_config, *visual_dianping_parameters
                 )
+                client = getattr(agent, "openai_client", None)
+                if client is not None:
+                    self._visual_clients[id(client)] = client
                 self.agents[device_id] = agent
             from AutoGLM_GUI.agents.gemini.async_agent import AsyncGeminiAgent
 
@@ -1275,11 +1284,14 @@ class SubtaskRunContext:
                 )
                 client = getattr(agent, "openai_client", None)
                 if client is not None:
-                    try:
-                        async with asyncio.timeout(5):
-                            await client.close()
-                    except Exception:
-                        pass  # Connection cleanup cannot change task evidence.
+                    self._visual_clients[id(client)] = client
                 self._leased.discard(device_id)
+            for client in self._visual_clients.values():
+                try:
+                    async with asyncio.timeout(5):
+                        await client.close()
+                except Exception:
+                    pass  # Connection cleanup cannot change task evidence.
+            self._visual_clients.clear()
             self.agents.clear()
             self.recent_attempts.clear()
