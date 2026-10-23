@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 from PIL import Image, ImageDraw
 
+import AutoGLM_GUI.execution as execution_module
 from AutoGLM_GUI.actions import ActionResult
 from AutoGLM_GUI.agents.visual_dianping import (
     VisualDianpingAgent,
@@ -29,6 +30,7 @@ from AutoGLM_GUI.execution import resolve_route
 from AutoGLM_GUI.execution_metrics import execution_metrics
 from AutoGLM_GUI.execution_models import ExecutionRequest
 from AutoGLM_GUI.observation import ObservationBroker, StaleObservationError
+from AutoGLM_GUI.skills import SkillManager
 from AutoGLM_GUI.visual_dianping import (
     VisualConditionError,
     VisualDianpingController,
@@ -323,7 +325,10 @@ def test_ios_common_observation_preserves_native_guard_and_rejects_reuse():
     asyncio.run(run())
 
 
-def test_ios_route_only_allows_builtin_visual_revision():
+def test_ios_route_only_allows_builtin_visual_revision(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        execution_module, "skill_manager", SkillManager(tmp_path / "skills.json")
+    )
     request = ExecutionRequest(
         route="skill",
         skill_id="dianping_search_shops",
