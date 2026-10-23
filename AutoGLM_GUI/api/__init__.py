@@ -35,7 +35,6 @@ from . import (
     metrics,
     rmq1,
     scheduled_tasks,
-    terminal,
     tasks,
     version,
     skills,
@@ -204,7 +203,6 @@ def create_app() -> FastAPI:
     app.include_router(media.router)
     app.include_router(metrics.router)
     app.include_router(scheduled_tasks.router)
-    app.include_router(terminal.router)
     app.include_router(tasks.router)
     app.include_router(version.router)
     app.include_router(skills.router)

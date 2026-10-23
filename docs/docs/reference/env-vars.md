@@ -38,8 +38,6 @@ sidebar_position: 2
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `AUTOGLM_CORS_ORIGINS` | `http://localhost:3000` | 允许的 CORS 来源 |
-| `AUTOGLM_ENABLE_WEB_TERMINAL` | `0` | 置为 `1` 启用 [Web 终端](../guide/web-terminal.md) |
-| `AUTOGLM_SERVER_HOST` | `127.0.0.1` | 服务绑定的主机地址，Web 终端等内部模块使用 |
 | `AUTOGLM_ADB_PATH` | `adb` | adb 可执行文件路径 |
 | `AUTOGLM_LOG_LEVEL` | `INFO` | 日志级别（`--reload` 模式下沿用） |
 | `AUTOGLM_LOG_FILE` | `logs/autoglm_{time:YYYY-MM-DD}.log` | 日志文件路径 |
@@ -82,5 +80,4 @@ services:
       AUTOGLM_BASE_URL: https://open.bigmodel.cn/api/paas/v4
       AUTOGLM_MODEL_NAME: autoglm-phone
       AUTOGLM_API_KEY: sk-xxxxx
-      AUTOGLM_ENABLE_WEB_TERMINAL: "1"
 ```

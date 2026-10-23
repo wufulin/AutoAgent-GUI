@@ -438,12 +438,6 @@ def test_main_entry_success_error_and_browser_paths(
     assert uvicorn_runs[-1]["host"] == "127.0.0.1"
     assert "API Key" in capsys.readouterr().out
 
-    monkeypatch.setattr(sys, "argv", ["autoglm-gui", "--adb-terminal-repl"])
-    monkeypatch.setattr(main_module, "adb_terminal_repl_main", lambda: 7)
-    with pytest.raises(SystemExit) as exc:
-        main_module.main()
-    assert exc.value.code == 7
-
     monkeypatch.setattr(sys, "argv", ["autoglm-gui", "--port", "9999", "--no-browser"])
     monkeypatch.setattr(
         adb_manager, "ensure_adb", lambda: (_ for _ in ()).throw(RuntimeError("no adb"))
