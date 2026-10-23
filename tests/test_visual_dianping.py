@@ -426,3 +426,38 @@ def test_cancel_interrupts_inference_and_never_actions():
         await a.openai_client.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("deepseek-flash", {"thinking": {"type": "disabled"}}),
+        ("UI-Venus-2-9B", {"chat_template_kwargs": {"enable_thinking": False}}),
+        ("other", {}),
+    ],
+)
+def test_policy_request_disables_known_provider_thinking_without_mutating_config(
+    model, expected
+):
+    async def run():
+        a = agent()
+        a.executor_config.model_name = model
+        request = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content=page().model_dump_json()),
+                    )
+                ],
+                usage=None,
+            )
+        )
+        a.openai_client.chat.completions.create = request
+        await a._perceive(await a.device.get_observation("test"))
+        assert request.call_args.kwargs["extra_body"] == expected
+        assert a.executor_config.extra_body == {}
+        assert a.model_config.model_name != model
+        await a.openai_client.close()
+
+    asyncio.run(run())

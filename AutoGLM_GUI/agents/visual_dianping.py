@@ -84,8 +84,8 @@ def protected_regions_match(
 class VisualDianpingAgent:
     """Task-scoped policy using the managed agent's leased device and verifier config.
 
-    The owner closes the original model client before installing this wrapper.
-    Manager/lease ownership is retained; cleanup closes this one policy client.
+    The owner retains the original client for later subgoals in the same run.
+    Manager/lease ownership is retained; run cleanup closes both clients.
     """
 
     def __init__(
@@ -187,6 +187,11 @@ class VisualDianpingAgent:
         extra = dict(config.extra_body)
         if config.model_name == "deepseek-flash":
             extra["thinking"] = {"type": "disabled"}
+        elif config.model_name.rsplit("/", 1)[-1].lower().startswith("ui-venus-2"):
+            extra["chat_template_kwargs"] = {
+                **extra.get("chat_template_kwargs", {}),
+                "enable_thinking": False,
+            }
         with trace_span(
             "step.llm",
             attrs={

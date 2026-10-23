@@ -602,3 +602,67 @@ def test_untrusted_v4_copy_does_not_bind_visual_executor(monkeypatch, tmp_path):
         await context.close()
 
     asyncio.run(run())
+
+
+def test_visual_then_regular_subtask_preserves_managed_client_and_closes_all(
+    monkeypatch, tmp_path
+):
+    import httpx
+    from openai import AsyncOpenAI
+    from AutoGLM_GUI.agents import visual_dianping
+
+    context, original, manager, timeline = setup(
+        monkeypatch, [[event("done", success=True)]]
+    )
+    calls = []
+
+    def respond(request):
+        calls.append(request.url.path)
+        return httpx.Response(
+            200,
+            json={
+                "id": "test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "test",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "ok"},
+                    }
+                ],
+            },
+        )
+
+    original.openai_client = AsyncOpenAI(
+        api_key="test",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    )
+    policy = ScriptedAgent([[event("done", success=True)]], timeline)
+    policy.openai_client = AsyncOpenAI(api_key="test")
+    old_stream = original.stream
+
+    async def stream(*args, **kwargs):
+        await original.openai_client.chat.completions.create(
+            model="test", messages=[{"role": "user", "content": "test"}]
+        )
+        async for value in old_stream(*args, **kwargs):
+            yield value
+
+    original.stream = stream
+    monkeypatch.setattr(visual_dianping, "VisualDianpingAgent", lambda *args: policy)
+    compiled = SkillManager(tmp_path / "skills.json").compile_skill(
+        "dianping_search_shops", 4, {"city": "广州", "shop_name": "霸王茶姬"}
+    )
+
+    async def run():
+        assert (await execute_skill(context, "phone", compiled)).success
+        assert not original.openai_client.is_closed()
+        result = await context.execute("phone", "查看当前页面", ["可见页面"], [], 4)
+        assert result.success and len(calls) == 1
+        assert manager.get_agent_with_context_async.await_count == 2
+        await context.close()
+        assert original.openai_client.is_closed() and policy.openai_client.is_closed()
+
+    asyncio.run(run())
