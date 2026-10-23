@@ -112,7 +112,7 @@ UIAutomator、页面节点、OCR 或 OmniParser。Android 和 RMQ1 iPhone 使用
 ```text
 任务参数（城市、准确店名）→ 可信内置 v4 → 设备租约 + 任务局部执行器
   → 新 Observation（上一动作后 / 本轮决策共用）
-  → 空白加载检查：只等待，不猜坐标；最多四次
+  → 空白加载检查：白色/浅灰空正文只等待，不猜坐标；最多四次
   → 一次视觉请求：页面、可见城市/查询、焦点、商户状态、门店、下一目标
   → 程序条件：先确认城市，再输入完整中文；只提交一次；不进入详情
   → 动作前代际/忙碌/未知结果检查 + 必要的像素变化检查
@@ -123,7 +123,8 @@ UIAutomator、页面节点、OCR 或 OmniParser。Android 和 RMQ1 iPhone 使用
 `VisualPage` 使用严格、完整 JSON：重复字段、额外字段、字符串布尔值、越界坐标、
 截断回复和不可辨认页面均停止。每次请求最多 800 输出 token、30 秒 HTTP 超时、35 秒
 总超时，SDK 不自动重试；失败请求也计入 executor_calls。历史只保留最近四个动作，
-截图中的文字不是指令。DeepSeek Flash 使用 `thinking=disabled`；UI-Venus-2 使用
+空白检查忽略顶部查询栏和底部系统栏，覆盖点评浅灰加载背景；误判最多产生有界等待，
+不会授权点击。截图中的文字不是指令。DeepSeek Flash 使用 `thinking=disabled`；UI-Venus-2 使用
 `chat_template_kwargs.enable_thinking=false`，将预算用于页面条件和坐标 JSON。
 本路径不采用 UI-Venus 的完整推理轨迹模式。程序确认城市后才允许搜索输入；输入后的全文必须精确匹配，
 商户分类须选中且至少两个不同可见门店包含关键词。模型的完成提议只触发独立验收。

@@ -64,6 +64,7 @@ def shot(image=None, frame=None):
     if image is None:
         image = Image.new("RGB", (300, 600), "white")
         ImageDraw.Draw(image).rectangle((1, 50, 40, 80), fill="black")
+        ImageDraw.Draw(image).rectangle((1, 150, 40, 180), fill="black")
     out = io.BytesIO()
     image.save(out, "PNG")
     return Screenshot(
@@ -364,17 +365,19 @@ def test_executor_override_is_optional_preserved_and_does_not_replace_platform_c
     assert manager.get_effective_config().skill_vision is None
 
 
-def test_blank_frame_never_calls_model_or_authorizes_input():
+@pytest.mark.parametrize("shade", [255, 247, 240])
+def test_blank_frame_never_calls_model_or_authorizes_input(shade):
     from AutoGLM_GUI.agents.visual_dianping import blank_loading_frame
 
-    assert blank_loading_frame(shot(Image.new("RGB", (300, 600), "white")))
+    loading = Image.new("RGB", (300, 600), (shade, shade, shade))
+    ImageDraw.Draw(loading).rectangle((30, 40, 90, 80), fill="black")
+    assert blank_loading_frame(shot(loading))
+    assert not blank_loading_frame(shot(Image.new("RGB", (300, 600), "black")))
     assert not blank_loading_frame(shot())
 
     async def run():
         a = agent()
-        a.device.get_screenshot = AsyncMock(
-            return_value=shot(Image.new("RGB", (300, 600), "white"))
-        )
+        a.device.get_screenshot = AsyncMock(return_value=shot(loading))
         a._perceive = AsyncMock()
         a.action_handler.execute = AsyncMock()
         events = [e async for e in a.stream("search", step_budget=5)]
