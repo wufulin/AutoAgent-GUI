@@ -26,7 +26,6 @@ const sidebars: SidebarsConfig = {
         'guide/realtime-control',
         'guide/multi-device',
         'guide/interrupt',
-        'guide/web-terminal',
         'guide/logs',
         'guide/mcp',
         'guide/deploy-docker',

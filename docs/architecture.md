@@ -17,6 +17,16 @@ ADB 的本地服务；保留验收实例的隔离设置，避免测试意外访�
 
 本次界面变更无数据迁移；回滚前端构建即可恢复原名称、图标和连接说明。
 
+## Web Terminal 移除
+
+侧栏和前端路由不再提供 Web Terminal，后端不再注册 `/api/terminal/*` 的
+HTTP 或 WebSocket 会话接口。专用 ADB REPL、PTY 进程服务及 xterm 依赖一并
+移除，`AUTOGLM_ENABLE_WEB_TERMINAL` 和隐藏的 `--adb-terminal-repl` 参数
+不再支持。设备发现和任务执行继续使用原有 ADB 通道。
+
+此变更不涉及持久数据迁移；升级时重启后端并重新构建前端，关闭旧的终端连接。
+需要恢复时回滚代码并重新安装依赖、构建前端和重启后端。
+
 ## RMQ1 iPhone 连接
 
 新增 `connection_type=rmq1`、`platform=ios`，在设备列表中与 USB、WiFi、

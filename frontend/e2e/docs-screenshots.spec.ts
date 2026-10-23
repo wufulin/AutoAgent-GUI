@@ -252,11 +252,6 @@ test.describe('Docs screenshots', () => {
       await page.waitForTimeout(1200);
     });
 
-    await shot(page, 'terminal', async () => {
-      await page.goto('/terminal');
-      await page.waitForTimeout(1500);
-    });
-
     await shot(page, 'logs', async () => {
       await page.goto('/logs');
       await page.waitForTimeout(1200);
