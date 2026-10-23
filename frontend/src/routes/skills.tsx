@@ -6,6 +6,7 @@ import {
   getErrorMessage,
   listSkills,
   updateSkill,
+  setSkillEnabled,
   type SkillDefinition,
   type SkillParameter,
   type SkillStep,
@@ -16,6 +17,7 @@ import { groupSkills, textLines } from '../lib/skills';
 import { SkillIcon } from '../components/SkillIcon';
 import { skillIcons } from '../lib/skill-icons';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
@@ -140,6 +142,7 @@ export function SkillsComponent() {
   const [parameters, setParameters] = useState<ParameterDraft[]>([]);
   const [editing, setEditing] = useState<SkillDefinition | null>(null);
   const [saving, setSaving] = useState(false);
+  const [toggling, setToggling] = useState<string | null>(null);
   const groups = groupSkills(skills, t.skills.general);
   const visibleGroups = groups.filter(
     group => appFilter === 'all' || group.key === appFilter
@@ -259,6 +262,21 @@ export function SkillsComponent() {
       setSaving(false);
     }
   };
+  const toggleEnabled = async (skill: SkillDefinition, enabled: boolean) => {
+    setToggling(skill.id);
+    setError(null);
+    try {
+      const updated = await setSkillEnabled(skill, enabled);
+      setSkills(current =>
+        current.map(item => (item.id === skill.id ? updated : item))
+      );
+    } catch (err) {
+      setError(getErrorMessage(err));
+      await load();
+    } finally {
+      setToggling(null);
+    }
+  };
   const remove = async (skill: SkillDefinition) => {
     if (!window.confirm(t.skills.deleteConfirm)) return;
     try {
@@ -374,11 +392,26 @@ export function SkillsComponent() {
                         {Object.keys(skill.parameters).join(', ') || '—'} ·{' '}
                         {t.skills.maxSteps}: {skill.max_steps}
                       </p>
+                      <div className="flex items-center justify-between gap-3">
+                        <Label htmlFor={`skill-enabled-${skill.id}`}>
+                          {t.skills.enabled}
+                        </Label>
+                        <Switch
+                          id={`skill-enabled-${skill.id}`}
+                          aria-label={`${t.skills.enabled} ${skill.name}`}
+                          checked={skill.enabled}
+                          disabled={toggling !== null}
+                          onCheckedChange={enabled =>
+                            void toggleEnabled(skill, enabled)
+                          }
+                        />
+                      </div>
                       <div className="flex flex-wrap gap-2">
                         {!skill.builtin && (
                           <Button
                             variant="outline"
                             size="sm"
+                            disabled={toggling !== null}
                             onClick={() => open(skill)}
                           >
                             <Pencil className="mr-1 h-3 w-3" />
@@ -398,6 +431,7 @@ export function SkillsComponent() {
                             variant="ghost"
                             size="icon"
                             aria-label={`${t.common.delete} ${skill.name}`}
+                            disabled={toggling !== null}
                             onClick={() => void remove(skill)}
                           >
                             <Trash2 className="h-4 w-4 text-red-600" />

@@ -564,3 +564,135 @@ test('shared chat picker supports keyboard, groups, platform and disabled filter
   await expect(picker).toContainText('大众点评：按城市搜索店铺');
   await expect(picker.locator('[data-app-icon="dianping"]')).toBeVisible();
 });
+
+test('toggles builtin availability without changing the version and reports save failures', async ({
+  page,
+}) => {
+  const catalog = [{ ...skill }];
+  await mockApp(page, true, catalog);
+  let fail = false;
+  await page.route('**/api/skills/*/enabled', async route => {
+    expect(route.request().method()).toBe('PATCH');
+    const payload = route.request().postDataJSON();
+    expect(payload.expected_version).toBe(skill.version);
+    expect(payload.expected_enabled).toBe(catalog[0].enabled);
+    if (fail)
+      return route.fulfill({
+        status: 503,
+        json: { detail: 'Storage unavailable' },
+      });
+    catalog[0].enabled = payload.enabled;
+    return route.fulfill({ json: catalog[0] });
+  });
+  await page.goto('/skills');
+  const toggle = page.getByRole('switch', { name: `启用技能 ${skill.name}` });
+  await expect(toggle).toBeChecked();
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await expect(page.getByText('已停用', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(toggle).not.toBeChecked();
+  fail = true;
+  await toggle.click();
+  await expect(page.getByRole('alert')).toContainText('Storage unavailable');
+  await expect(toggle).not.toBeChecked();
+  fail = false;
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await expect(
+    page.getByText(`v${skill.version}`, { exact: true })
+  ).toBeVisible();
+});
+
+test('copies the conversation ID and all details including collapsed steps', async ({
+  page,
+}) => {
+  await mockApp(page);
+  const record = {
+    ...history,
+    source: 'chat',
+    source_detail: 'conversation-123',
+    messages: [
+      {
+        role: 'assistant',
+        content: '步骤结果',
+        thinking: '检查页面',
+        action: { tool_name: 'list_devices' },
+        step: 1,
+      },
+    ],
+  };
+  await page.route('**/api/history/**', route =>
+    route.fulfill({ json: { records: [record], total: 1 } })
+  );
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          sessionStorage.setItem('copied-text', text);
+        },
+      },
+    });
+  });
+  await page.goto('/history');
+  await page.getByRole('button', { name: '复制对话 ID', exact: true }).click();
+  expect(await page.evaluate(() => sessionStorage.getItem('copied-text'))).toBe(
+    'conversation-123'
+  );
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button', { name: '对话详情', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: '步骤 1', exact: true }).click();
+  await expect(dialog.getByText('检查页面')).not.toBeVisible();
+  await dialog.getByRole('button', { name: '复制完整详情' }).click();
+  expect(
+    JSON.parse(
+      (await page.evaluate(() => sessionStorage.getItem('copied-text'))) || '{}'
+    )
+  ).toEqual(record);
+  await expect(
+    dialog.getByRole('status').filter({ hasText: '已复制' })
+  ).toBeAttached();
+  await dialog
+    .getByRole('button', { name: '复制记录 ID', exact: true })
+    .click();
+  expect(await page.evaluate(() => sessionStorage.getItem('copied-text'))).toBe(
+    record.id
+  );
+  await page.evaluate(() => {
+    navigator.clipboard.writeText = async () => {
+      throw new Error('denied');
+    };
+  });
+  await dialog.getByRole('button', { name: '复制完整详情' }).click();
+  await expect(
+    dialog.getByText('复制失败，请重试或检查剪贴板权限')
+  ).toBeVisible();
+});
+
+test('copies details through the fallback when the clipboard API is unavailable', async ({
+  page,
+}) => {
+  await mockApp(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    document.execCommand = (command: string) => {
+      const input = document.activeElement as HTMLTextAreaElement;
+      if (command !== 'copy' || input.tagName !== 'TEXTAREA') return false;
+      sessionStorage.setItem('copied-text', input.value);
+      return true;
+    };
+  });
+  await page.goto('/history');
+  await page.getByRole('button', { name: '对话详情', exact: true }).click();
+  await page.getByRole('button', { name: '复制完整详情' }).click();
+  expect(
+    JSON.parse(
+      (await page.evaluate(() => sessionStorage.getItem('copied-text'))) || '{}'
+    )
+  ).toEqual(history);
+});

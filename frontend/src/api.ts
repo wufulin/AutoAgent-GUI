@@ -925,6 +925,22 @@ export async function getSkill(
     })
   ).data;
 }
+export async function setSkillEnabled(
+  skill: SkillDefinition,
+  enabled: boolean
+): Promise<SkillDefinition> {
+  return (
+    await axios.patch<SkillDefinition>(
+      `/api/skills/${encodeURIComponent(skill.id)}/enabled`,
+      {
+        expected_version: skill.version,
+        expected_enabled: skill.enabled,
+        enabled,
+      }
+    )
+  ).data;
+}
+
 export async function createSkill(
   skill: SkillDefinition
 ): Promise<SkillDefinition> {

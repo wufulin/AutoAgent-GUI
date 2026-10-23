@@ -386,3 +386,23 @@ flowchart TD
 | V2E6 | `AutoGLM_GUI/observation.py`、`devices/async_adapter.py`、`subtasks.py#verify_completion` | 观察身份、动作边界、并发采集与独立 fresh 验收 | High |
 | V2E7 | `AutoGLM_GUI/execution.py#execute_skill`、`agents/gemini/conditioned.py`、`dianping_controller.py` | 内置 v3 绑定、每步条件决策与有限页面边界 | High |
 | V2E8 | `AutoGLM_GUI/adb/hierarchy.py`、`agents/gemini/conditioned.py` | 有界节点读取、节点/截图非原子及 TTL 限制 | High |
+
+
+## 技能启停与历史复制
+
+技能库为内置与自定义技能提供「启用技能」开关。`PATCH /api/skills/{id}/enabled`
+使用 `expected_version` 与 `expected_enabled` 做乐观并发检查，冲突返回 409，存储失败
+返回 503。启停设置位于现有 `skills.json` 的可选 `enabled_overrides` 映射中，缺省沿用
+技能定义的 `enabled` 值；通过现有跨进程锁与原子替换保存，不改动不可变定义或版本号。
+设置对同一 ID 的所有版本生效：选择目录不展示停用技能，显式调用、规划器调用与
+定时任务在编译技能时拒绝停用项。已编译并开始的任务不受开关影响，需单独停止任务。
+自定义技能编辑仍生成新版本，并同步其启用状态；删除时清理该 ID 的启停设置。
+
+旧目录无需迁移。回滚到不认识此映射的旧后端时，旧服务会忽略启停覆盖；回滚前先停止
+任务与调度，备份目录，恢复旧版目录或核对自定义技能定义中的 `enabled`，避免把覆盖
+当作跨版本停用保证。重新启用只恢复后续调用资格，不会主动重跑失败的定时任务。
+
+历史页为会话 ID 与记录 ID 提供独立复制按钮，定时任务名称不作为会话 ID。
+「复制完整详情」将当前记录完整序列化为格式化 JSON，包含全部消息（含折叠步骤）、
+动作、执行汇总与耗时；不会额外读取设备或调用模型。优先使用浏览器 Clipboard API，
+没有该 API 的 HTTP 环境使用页内复制兼容路径，成功与失败均提供反馈。

@@ -18,6 +18,13 @@ class SkillListResponse(BaseModel):
     skills: list[SkillDefinition]
 
 
+class SkillEnabledUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1, strict=True)
+    expected_enabled: bool = Field(strict=True)
+    enabled: bool = Field(strict=True)
+
+
 class SkillUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1, strict=True)
@@ -69,6 +76,19 @@ def update_skill(skill_id: str, request: SkillUpdate) -> SkillDefinition:
     try:
         return skill_manager.update_skill(
             skill_id, request.skill, request.expected_version
+        )
+    except (SkillError, SkillStorageError) as exc:
+        raise _error(exc) from exc
+
+
+@router.patch("/api/skills/{skill_id}/enabled", response_model=SkillDefinition)
+def set_skill_enabled(skill_id: str, request: SkillEnabledUpdate) -> SkillDefinition:
+    try:
+        return skill_manager.set_enabled(
+            skill_id,
+            request.enabled,
+            request.expected_version,
+            request.expected_enabled,
         )
     except (SkillError, SkillStorageError) as exc:
         raise _error(exc) from exc
